@@ -1,0 +1,13 @@
+[package]
+name = "c2pa-sign-sample"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+c2pa-claim = { version = "0.0.0", path = "../c2pa-claim" }
+c2pa-store = { version = "0.0.0", path = "../c2pa-store", features = ["write", "std"] }
+coset = "0.4.2"
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+rcgen = { version = "0.14.10", default-features = false, features = ["pem"] }
+time = { version = "0.3", features = ["std"] }

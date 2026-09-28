@@ -5,13 +5,13 @@
 
 use alloc::vec::Vec;
 
+use crate::box_reader::BoxReader;
 use crate::error::Error;
 use crate::format::{
     BOX_ID_LEN, BOX_JUMB, BOX_JUMD, BOX_SALT, HDR_BASE, HDR_XL, SIGNATURE_HASH_LEN, TOGGLE_ID,
     TOGGLE_LABEL, TOGGLE_PRIVATE, TOGGLE_SIGNATURE,
 };
 use crate::limits::Limits;
-use crate::box_reader::BoxReader;
 use crate::uuids::{classify, ContentType};
 
 /// A description box (`jumd`): identifies a superbox's type and label.

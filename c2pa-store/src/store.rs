@@ -6,8 +6,8 @@
 
 use crate::error::Error;
 use crate::jumbf::{parse_root, ContentBox, SuperBox};
-use crate::limits::Limits;
 use crate::jumbf_uri::JumbfUri;
+use crate::limits::Limits;
 use crate::uuids::ContentType;
 
 /// Length of the UUID prefix inside a `uuid` content box (signature / UUID

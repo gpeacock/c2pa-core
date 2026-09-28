@@ -28,16 +28,17 @@ use alloc::vec::Vec;
 
 use sha2::{Digest, Sha256};
 
+use crate::box_writer::{BoxWriter, SeekSink};
 use crate::error::Error;
 use crate::format::{
     BOX_BFDB, BOX_BIDB, BOX_CBOR, BOX_JUMB, BOX_JUMD, BOX_SALT, TOGGLE_LABEL, TOGGLE_PRIVATE,
     TOGGLE_REQUESTABLE,
 };
 use crate::uuids;
-use crate::box_writer::{BoxWriter, SeekSink};
 
 const LABEL_STORE: &str = "c2pa";
 const LABEL_ASSERTIONS: &str = "c2pa.assertions";
+const LABEL_SIGNATURE: &str = "c2pa.signature";
 const ALG: &str = "sha256";
 
 /// Enough to build a `HashedUri` (in a higher layer, which owns that type)
@@ -258,6 +259,19 @@ impl<S: SeekSink> ManifestStoreBuilder<S> {
         self.writer
             .start_superbox(&uuids::CLAIM, claim_label, None)?;
         self.writer.content_box(&BOX_CBOR, claim_cbor)?;
+        self.writer.end_box()?;
+        Ok(())
+    }
+
+    /// Add the claim signature: a superbox labeled `c2pa.signature` holding
+    /// `signature_cbor` (typically a `COSE_Sign1`, itself CBOR-encoded) in a
+    /// `cbor` content box. Call after [`add_claim`](Self::add_claim), which
+    /// is what the claim's own `signature` field points at, and before
+    /// [`finish`](Self::finish).
+    pub fn add_signature(&mut self, signature_cbor: &[u8]) -> Result<(), Error> {
+        self.writer
+            .start_superbox(&uuids::SIGNATURE, LABEL_SIGNATURE, None)?;
+        self.writer.content_box(&BOX_CBOR, signature_cbor)?;
         self.writer.end_box()?;
         Ok(())
     }
