@@ -1,0 +1,30 @@
+[package]
+name = "c2pa-store"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT OR Apache-2.0"
+description = "Zero-copy, no_std structural parser for C2PA manifest stores (JUMBF)"
+publish = false
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false, optional = true }
+
+[features]
+default = []
+# Enables the streaming JUMBF box emitter (Layer 1 write) and
+# `ManifestStoreBuilder`, which hashes assertions as it writes them (hence
+# `sha2`). The hash algorithm is fixed to SHA-256 for now.
+write = ["dep:sha2"]
+# Implements the write sink over std::io::Write + Seek (needs `write`), and
+# lets `ManifestStoreBuilder::add_embedded_file_assertion` stream from a
+# `std::io::Read` instead of requiring the whole asset in memory.
+std = []
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Note: the strict clippy restriction lints (unwrap_used, indexing_slicing,
+# arithmetic_side_effects, ...) are applied as crate-level attributes in
+# src/lib.rs so they gate the library only, not the tests/examples (which
+# legitimately use unwrap/indexing).

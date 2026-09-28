@@ -1,0 +1,22 @@
+[package]
+name = "c2pa-claim"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "C2PA claim and hashed-URI support built on c2pa-store (JUMBF) and c2pa_cbor"
+publish = false
+
+[dependencies]
+c2pa-store = { path = "../c2pa-store", features = ["write"] }
+c2pa_cbor = "0.78.0"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+sha2 = { version = "0.10", default-features = false }
+
+[features]
+default = ["std"]
+# Enables digest_reader/DataHash::from_reader, which stream-hash a
+# std::io::Read source without buffering it in memory. Everything else in
+# this crate only borrows &[u8]/&str and has no std dependency.
+std = ["sha2/std"]

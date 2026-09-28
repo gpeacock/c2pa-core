@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+.DS_Store
+c2pa-store/fuzz/target
+c2pa-store/fuzz/corpus
+c2pa-store/fuzz/artifacts
