@@ -7,11 +7,13 @@
 use std::io::Write;
 use std::process::Command;
 
+use c2pa_cbor::Value;
+use c2pa_cbor::cose::{CoseSign1, Label};
 use c2pa_store::ManifestStore;
-use coset::cbor::value::Value;
-use coset::iana::EnumI64;
-use coset::{iana, TaggedCborSerializable};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+/// IANA COSE Header Parameters registry label for `x5chain`.
+const COSE_HEADER_X5CHAIN: i64 = 33;
 
 /// Pulls the raw 32-byte Ed25519 public key out of a cert's DER: finds the
 /// id-Ed25519 OID (1.3.101.112), then the BIT STRING right after it that
@@ -54,15 +56,14 @@ fn signature_verifies_against_x5chain_public_key() {
     let claim_cbor = manifest.claim_cbor().unwrap().to_vec();
     let sig_cbor = manifest.signature_cose().unwrap();
 
-    let mut sign1 = coset::CoseSign1::from_tagged_slice(sig_cbor).unwrap();
+    let mut sign1 = CoseSign1::from_tagged_slice(sig_cbor).unwrap();
 
-    let x5chain_label = iana::HeaderParameter::X5Chain.to_i64();
     let (_l, x5chain_value) = sign1
         .protected
         .header
         .rest
         .iter()
-        .find(|(l, _)| matches!(l, coset::Label::Int(i) if *i == x5chain_label))
+        .find(|(l, _)| matches!(l, Label::Int(i) if *i == COSE_HEADER_X5CHAIN))
         .expect("x5chain header present");
     let Value::Array(certs) = x5chain_value else {
         panic!("x5chain not an array");
@@ -70,17 +71,17 @@ fn signature_verifies_against_x5chain_public_key() {
     let Value::Bytes(ee_der) = &certs[0] else {
         panic!("x5chain[0] not bytes");
     };
-    let verifying_key = VerifyingKey::from_bytes(&ed25519_public_key_from_der(ee_der)).unwrap();
+    let verifying_key =
+        VerifyingKey::from_bytes(&ed25519_public_key_from_der(ee_der)).unwrap();
 
     // Detached-content check: the signature box's payload is only present in
     // memory for our own convenience, so restore it from the claim box the
     // same way an external verifier would before recomputing the TBS bytes.
     sign1.payload = Some(claim_cbor);
-    sign1
-        .verify_signature(&[], |sig, tbs| {
-            let signature = Signature::from_slice(sig).unwrap();
-            verifying_key.verify(tbs, &signature)
-        })
+    let tbs = sign1.tbs_data(&[]).expect("build Sig_structure");
+    let signature = Signature::from_slice(&sign1.signature).unwrap();
+    verifying_key
+        .verify(&tbs, &signature)
         .expect("signature must verify against the x5chain's end-entity public key");
 
     std::fs::remove_file(&asset_path).ok();

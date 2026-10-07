@@ -22,14 +22,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use c2pa_claim::{Action, Actions, Claim, DataHash, GeneratorInfo, HashedUri};
+use c2pa_cbor::Value;
+use c2pa_cbor::cose::{CoseSign1Builder, HeaderBuilder};
 use c2pa_store::{AssertionHash, ManifestStoreBuilder};
-use coset::cbor::value::Value;
-use coset::iana::EnumI64;
-use coset::{CoseSign1Builder, HeaderBuilder, TaggedCborSerializable, iana};
 use ed25519_dalek::Signer;
 
 const MANIFEST_LABEL: &str = "urn:c2pa:sign-sample";
 const SIGNER_COMMON_NAME: &str = "c2pa-sign-sample-ephemeral.local";
+
+/// COSE algorithm identifier for EdDSA (RFC 8152 §8.2, IANA COSE Algorithms
+/// registry). `c2pa-cbor`'s `cose` module doesn't ship an `iana` enum, so
+/// this is the raw registered value.
+const COSE_ALG_EDDSA: i64 = -8;
+/// COSE header parameter label for `x5chain` (IANA COSE Header Parameters
+/// registry).
+const COSE_HEADER_X5CHAIN: i64 = 33;
 
 /// Convert a `ManifestStoreBuilder` result into the `HashedUri` a claim
 /// references.
@@ -116,18 +123,17 @@ fn main() -> ExitCode {
     ]);
 
     let protected = HeaderBuilder::new()
-        .algorithm(iana::Algorithm::EdDSA)
-        .value(iana::HeaderParameter::X5Chain.to_i64(), x5chain)
+        .algorithm(COSE_ALG_EDDSA)
+        .value(COSE_HEADER_X5CHAIN, x5chain)
         .build();
-    let sign1 = CoseSign1Builder::new()
+    let mut sign1 = CoseSign1Builder::new()
         .protected(protected)
         .payload(claim_cbor)
-        .create_signature(&[], |tbs| {
-            chain.ee_signing_key.sign(tbs).to_bytes().to_vec()
-        })
         .build();
+    let tbs = sign1.tbs_data(&[]).expect("build Sig_structure");
+    sign1.signature = chain.ee_signing_key.sign(&tbs).to_bytes().to_vec();
     // c2pa-rs/c2patool expect the tagged form (CBOR tag 18), not the bare
-    // 4-element array `CborSerializable::to_vec` would produce.
+    // 4-element array a plain `to_vec` would produce.
     let signature_cbor = sign1.to_tagged_vec().expect("encode COSE_Sign1");
 
     builder
