@@ -52,3 +52,42 @@ fn stream_digest<D: Digest>(mut reader: impl std::io::Read) -> std::io::Result<V
     }
     Ok(hasher.finalize().to_vec())
 }
+
+/// An in-progress digest under one of the registry algorithms, fed in
+/// caller-sized chunks. Unlike [`digest_reader`], it never reads on its own,
+/// so it has no `std::io` dependency and can be driven from any I/O model.
+#[derive(Clone, Debug)]
+pub enum IncrementalDigest {
+    Sha256(Sha256),
+    Sha384(Sha384),
+    Sha512(Sha512),
+}
+
+impl IncrementalDigest {
+    /// Start a digest, or `None` if the algorithm identifier is not
+    /// recognized.
+    pub fn new(alg: &str) -> Option<Self> {
+        match alg {
+            "sha256" => Some(Self::Sha256(Sha256::new())),
+            "sha384" => Some(Self::Sha384(Sha384::new())),
+            "sha512" => Some(Self::Sha512(Sha512::new())),
+            _ => None,
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        match self {
+            Self::Sha256(h) => h.update(data),
+            Self::Sha384(h) => h.update(data),
+            Self::Sha512(h) => h.update(data),
+        }
+    }
+
+    pub fn finalize(self) -> Vec<u8> {
+        match self {
+            Self::Sha256(h) => h.finalize().to_vec(),
+            Self::Sha384(h) => h.finalize().to_vec(),
+            Self::Sha512(h) => h.finalize().to_vec(),
+        }
+    }
+}

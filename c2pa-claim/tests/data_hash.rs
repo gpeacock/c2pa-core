@@ -110,3 +110,17 @@ fn plugs_into_a_real_manifest_and_verifies() {
     let decoded_dh = DataHash::from_cbor(assertion.payload().unwrap().data).unwrap();
     assert_eq!(decoded_dh, dh);
 }
+
+#[test]
+fn incremental_hasher_matches_from_reader_for_any_chunking() {
+    let expected = DataHash::from_reader("sha256", Cursor::new(ASSET)).unwrap();
+    for chunk in [1, 5, ASSET.len()] {
+        let mut h = DataHash::hasher("sha256").unwrap();
+        for piece in ASSET.chunks(chunk) {
+            h.update(piece);
+        }
+        assert_eq!(h.bytes_hashed(), ASSET.len() as u64);
+        assert_eq!(h.finish(), expected);
+    }
+    assert!(DataHash::hasher("md5").is_none());
+}

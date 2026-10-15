@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
-#[cfg(feature = "std")]
 use crate::hash;
 
 /// A byte range excluded from a [`DataHash`]'s coverage (e.g. the span
@@ -87,6 +86,18 @@ impl DataHash {
         Ok(Self::new(alg, digest))
     }
 
+    /// Start an incremental data hash under `alg`, for callers that want to
+    /// feed the asset in chunks on their own schedule (e.g. from a state
+    /// machine or async task) instead of handing over a blocking reader.
+    /// `None` if the algorithm identifier is not recognized.
+    pub fn hasher(alg: &str) -> Option<DataHasher> {
+        Some(DataHasher {
+            alg: alg.to_string(),
+            digest: hash::IncrementalDigest::new(alg)?,
+            bytes_hashed: 0,
+        })
+    }
+
     /// Encode to deterministic (canonical) CBOR — the form that gets hashed
     /// and signed, as C2PA requires.
     pub fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
@@ -96,5 +107,34 @@ impl DataHash {
     /// Decode a data-hash assertion from CBOR bytes.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
         c2pa_cbor::from_slice(bytes)
+    }
+}
+
+/// An in-progress whole-asset data hash, created by [`DataHash::hasher`].
+/// Owns all of its state (no borrows), so it can be parked inside a state
+/// machine between chunks and driven by any I/O model or none at all.
+#[derive(Clone, Debug)]
+pub struct DataHasher {
+    alg: String,
+    digest: hash::IncrementalDigest,
+    bytes_hashed: u64,
+}
+
+impl DataHasher {
+    /// Hash the next chunk of the asset. Work is proportional to
+    /// `chunk.len()`, so callers bound each step by choosing the chunk size.
+    pub fn update(&mut self, chunk: &[u8]) {
+        self.digest.update(chunk);
+        self.bytes_hashed = self.bytes_hashed.saturating_add(chunk.len() as u64);
+    }
+
+    /// Total bytes fed so far, for progress reporting.
+    pub fn bytes_hashed(&self) -> u64 {
+        self.bytes_hashed
+    }
+
+    /// Finish hashing and build the data-hash assertion.
+    pub fn finish(self) -> DataHash {
+        DataHash::new(self.alg, self.digest.finalize())
     }
 }

@@ -64,8 +64,11 @@ pub struct EphemeralChain {
     pub ee_signing_key: Ed25519SigningKey,
 }
 
+// c2pa-rs <= 0.90 (used by c2patool 0.27) requires an Organization in the
+// signing cert subject and otherwise reports `claimSignature.mismatch`.
 fn common_name(name: &str) -> DistinguishedName {
     let mut dn = DistinguishedName::new();
+    dn.push(DnType::OrganizationName, "c2pa-sign-sample");
     dn.push(DnType::CommonName, name);
     dn
 }

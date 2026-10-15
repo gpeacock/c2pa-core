@@ -71,8 +71,7 @@ fn signature_verifies_against_x5chain_public_key() {
     let Value::Bytes(ee_der) = &certs[0] else {
         panic!("x5chain[0] not bytes");
     };
-    let verifying_key =
-        VerifyingKey::from_bytes(&ed25519_public_key_from_der(ee_der)).unwrap();
+    let verifying_key = VerifyingKey::from_bytes(&ed25519_public_key_from_der(ee_der)).unwrap();
 
     // Detached-content check: the signature box's payload is only present in
     // memory for our own convenience, so restore it from the claim box the
@@ -88,4 +87,3 @@ fn signature_verifies_against_x5chain_public_key() {
     std::fs::remove_file(&sidecar_path).ok();
     std::fs::remove_file(asset_path.with_extension("ca.pem")).ok();
 }
-

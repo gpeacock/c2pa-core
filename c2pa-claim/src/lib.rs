@@ -14,7 +14,8 @@
 //! in signatures) with one deliberate exception, gated behind the `std`
 //! feature (on by default): [`DataHash::from_reader`] and
 //! `hash::digest_reader`, for streaming a whole asset's hash without
-//! buffering it (see [`DataHash`]).
+//! buffering it (see [`DataHash`]). [`DataHash::hasher`] is the
+//! I/O-free alternative: the caller feeds chunks on its own schedule.
 //!
 //! `no_std` is not a current goal of this crate family, but this std-light
 //! boundary is kept anyway: it costs little, keeps the door open for a
@@ -30,6 +31,6 @@ mod hashed_uri;
 
 pub use actions::{Action, Actions};
 pub use claim::Claim;
-pub use data_hash::{DataHash, HashRange};
+pub use data_hash::{DataHash, DataHasher, HashRange};
 pub use generator_info::GeneratorInfo;
 pub use hashed_uri::{HashedUri, VerifyError};

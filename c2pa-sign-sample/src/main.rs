@@ -11,38 +11,36 @@
 //! can be told to trust it for local testing, e.g.
 //! `c2patool trust --trust_anchors <sidecar>.ca.pem`.
 //!
+//! The work runs through [`sign_session::SignSession`], a caller-driven state
+//! machine: this `main` loop reads the file in chunks, feeds them in, reports
+//! progress, and answers the session's request for a signature. Nothing is a
+//! callback and nothing assumes a thread model or async runtime -- the same
+//! session could be driven from an event loop, an async task, or a UI tick,
+//! and cancelled at any yield point by dropping it.
+//!
 //! Usage: `cargo run -- <path-to-file>`
 
 mod ephemeral_cert;
+mod sign_session;
 
 use std::env;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use c2pa_claim::{Action, Actions, Claim, DataHash, GeneratorInfo, HashedUri};
-use c2pa_cbor::Value;
-use c2pa_cbor::cose::{CoseSign1Builder, HeaderBuilder};
-use c2pa_store::{AssertionHash, ManifestStoreBuilder};
+use c2pa_claim::GeneratorInfo;
 use ed25519_dalek::Signer;
+use sign_session::{Action, Progress, SignParams, SignSession};
 
 const MANIFEST_LABEL: &str = "urn:c2pa:sign-sample";
 const SIGNER_COMMON_NAME: &str = "c2pa-sign-sample-ephemeral.local";
+const CHUNK_SIZE: usize = 64 * 1024;
 
 /// COSE algorithm identifier for EdDSA (RFC 8152 §8.2, IANA COSE Algorithms
 /// registry). `c2pa-cbor`'s `cose` module doesn't ship an `iana` enum, so
 /// this is the raw registered value.
 const COSE_ALG_EDDSA: i64 = -8;
-/// COSE header parameter label for `x5chain` (IANA COSE Header Parameters
-/// registry).
-const COSE_HEADER_X5CHAIN: i64 = 33;
-
-/// Convert a `ManifestStoreBuilder` result into the `HashedUri` a claim
-/// references.
-fn hashed_uri(a: AssertionHash) -> HashedUri {
-    HashedUri::new(a.url, Some(a.alg.to_string()), &a.hash)
-}
 
 /// A throwaway, unique-enough instance ID: no identity infrastructure here,
 /// just random bytes hex-encoded into the `xmp:iid:` form claims use.
@@ -53,6 +51,20 @@ fn random_instance_id() -> String {
     format!("xmp:iid:{hex}")
 }
 
+fn report(p: Progress) {
+    match p.asset_len {
+        Some(total) if total > 0 => eprint!(
+            "\r{:?}: {}/{} bytes ({}%)   ",
+            p.phase,
+            p.asset_bytes_hashed,
+            total,
+            p.asset_bytes_hashed * 100 / total
+        ),
+        _ => eprint!("\r{:?}: {} bytes   ", p.phase, p.asset_bytes_hashed),
+    }
+    std::io::stderr().flush().ok();
+}
+
 fn main() -> ExitCode {
     let Some(path) = env::args().nth(1) else {
         eprintln!("usage: c2pa-sign-sample <path-to-file>");
@@ -60,87 +72,73 @@ fn main() -> ExitCode {
     };
     let path = PathBuf::from(path);
 
-    let file = match File::open(&path) {
+    let mut file = match File::open(&path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("open {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
     };
-    // Streams the file's bytes through the hasher rather than buffering the
-    // whole thing in memory.
-    let data_hash = match DataHash::from_reader("sha256", BufReader::new(file)) {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("hash {}: {e}", path.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let data_hash_cbor = data_hash.to_cbor().expect("encode data hash assertion");
+    let asset_len = file.metadata().ok().map(|m| m.len());
 
-    let mut builder =
-        ManifestStoreBuilder::new(Vec::<u8>::new(), MANIFEST_LABEL).expect("start manifest store");
-
-    let data_hash_href = hashed_uri(
-        builder
-            .add_cbor_assertion(DataHash::LABEL, None, &data_hash_cbor)
-            .expect("add data hash assertion"),
-    );
-
-    let mut actions = Actions::new();
-    actions.add_action(
-        Action::new(Action::CREATED).with_digital_source_type(Action::DIGITAL_SOURCE_TYPE_EMPTY),
-    );
-    let actions_cbor = actions.to_cbor().expect("encode actions assertion");
-    let actions_href = hashed_uri(
-        builder
-            .add_cbor_assertion(Actions::LABEL, None, &actions_cbor)
-            .expect("add actions assertion"),
-    );
-
-    let mut generator_info = GeneratorInfo::new("c2pa-sign-sample");
-    generator_info.version = Some(env!("CARGO_PKG_VERSION").to_string());
-
-    let mut claim = Claim::new(MANIFEST_LABEL, random_instance_id(), generator_info);
-    // Must match the algorithm `ManifestStoreBuilder` actually hashed
-    // assertions with (currently always SHA-256).
-    claim.alg = Some("sha256".to_string());
-    claim.add_created_assertion(data_hash_href);
-    claim.add_created_assertion(actions_href);
-    let claim_cbor = claim.to_cbor().expect("encode claim");
-
-    builder
-        .add_claim("c2pa.claim.v2", &claim_cbor)
-        .expect("add claim");
-
-    // A real Ed25519 signature over the claim bytes, from a freshly generated
-    // self-signed CA + end-entity certificate chain -- real crypto, but with
-    // no trust anchoring (see the module doc comment and this binary's own).
+    // A real Ed25519 key from a freshly generated self-signed CA + end-entity
+    // certificate chain -- real crypto, but with no trust anchoring (see the
+    // module doc comment). The session only needs the certificates; the key
+    // stays here, with the caller.
     let chain = ephemeral_cert::generate_ephemeral_chain(SIGNER_COMMON_NAME);
-    let x5chain = Value::Array(vec![
-        Value::Bytes(chain.ee_der.clone()),
-        Value::Bytes(chain.ca_der.clone()),
-    ]);
 
-    let protected = HeaderBuilder::new()
-        .algorithm(COSE_ALG_EDDSA)
-        .value(COSE_HEADER_X5CHAIN, x5chain)
-        .build();
-    let mut sign1 = CoseSign1Builder::new()
-        .protected(protected)
-        .payload(claim_cbor)
-        .build();
-    let tbs = sign1.tbs_data(&[]).expect("build Sig_structure");
-    sign1.signature = chain.ee_signing_key.sign(&tbs).to_bytes().to_vec();
-    // c2pa-rs/c2patool expect the tagged form (CBOR tag 18), not the bare
-    // 4-element array a plain `to_vec` would produce.
-    let signature_cbor = sign1.to_tagged_vec().expect("encode COSE_Sign1");
+    let mut generator = GeneratorInfo::new("c2pa-sign-sample");
+    generator.version = Some(env!("CARGO_PKG_VERSION").to_string());
 
-    builder
-        .add_signature(&signature_cbor)
-        .expect("add signature");
+    let mut session = SignSession::new(SignParams {
+        manifest_label: MANIFEST_LABEL.to_string(),
+        instance_id: random_instance_id(),
+        generator,
+        data_hash_alg: "sha256".to_string(),
+        cose_alg: COSE_ALG_EDDSA,
+        x5chain: vec![chain.ee_der.clone(), chain.ca_der.clone()],
+        asset_len,
+    })
+    .expect("start signing session");
 
-    let store_bytes = builder.finish().expect("finish manifest store");
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    // Each iteration is a yield point: this is where a host would check for
+    // cancellation, update a UI, or go service other work.
+    let result = loop {
+        let action = match session.poll() {
+            Ok(a) => a,
+            Err(e) => break Err(e.to_string()),
+        };
+        let step = match action {
+            Action::NeedAssetData => match file.read(&mut buf) {
+                Ok(0) => session.end_asset().map_err(|e| e.to_string()),
+                Ok(n) => session.write_asset(&buf[..n]).map_err(|e| e.to_string()),
+                Err(e) => Err(format!("read {}: {e}", path.display())),
+            },
+            Action::NeedSignature(tbs) => {
+                let signature = chain.ee_signing_key.sign(tbs).to_bytes().to_vec();
+                session
+                    .provide_signature(signature)
+                    .map_err(|e| e.to_string())
+            }
+            Action::Continue => Ok(()),
+            Action::Complete => break Ok(()),
+        };
+        if let Err(e) = step {
+            break Err(e);
+        }
+        report(session.progress());
+    };
+    eprintln!();
+
+    let store_bytes =
+        match result.and_then(|()| session.into_store_bytes().map_err(|e| e.to_string())) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("sign {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        };
 
     let sidecar_path = path.with_extension("c2pa");
     if let Err(e) = std::fs::write(&sidecar_path, &store_bytes) {
@@ -160,8 +158,9 @@ fn main() -> ExitCode {
     );
     println!(
         "wrote {} -- not a trusted CA; to validate with c2patool, run:\n  \
-         c2patool trust --trust_anchors {}",
+         c2patool {:?} trust --trust_anchors \"{}\"",
         ca_pem_path.display(),
+        path,
         ca_pem_path.display()
     );
     ExitCode::SUCCESS
