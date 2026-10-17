@@ -1,7 +1,8 @@
 //! A sans-I/O, caller-driven signing pipeline: no callbacks, no threads, no
 //! async runtime.
 //!
-//! [`SignSession`] is a state machine. The caller repeatedly calls
+//! [`SignSession`] drives a sequential async workflow, using compiler-generated
+//! state rather than a hand-written state machine. The caller repeatedly calls
 //! [`poll`](SignSession::poll), which either does one bounded unit of
 //! internal work and returns [`Action::Continue`], or tells the caller what
 //! it's waiting on:
@@ -22,13 +23,20 @@
 //! Cancelling is just dropping the session; it holds no OS resources and nothing has
 //! been written anywhere but its own memory.
 //!
-//! Any error is fail-stop: the session moves to a terminal failed state and
-//! every later call returns [`SignError::Failed`].
+//! Workflow errors are fail-stop; out-of-order client calls are non-fatal.
+//! Asset chunks are borrowed and hashed directly before
+//! [`write_asset`](SignSession::write_asset) returns, with no chunk allocation
+//! or copy. The client may immediately reuse its buffer and controls the chunk
+//! size. Only the hasher state crosses the suspension boundary at end-of-input.
+//! Checkpoints explicitly suspend even when no external input is needed.
 
+use std::cell::Cell;
 use std::fmt;
+use std::rc::Rc;
 
+use crate::workflow::{Context, Workflow};
 use c2pa_cbor::Value;
-use c2pa_cbor::cose::{CoseSign1, CoseSign1Builder, HeaderBuilder};
+use c2pa_cbor::cose::{CoseSign1Builder, HeaderBuilder};
 use c2pa_claim::{
     Action as ClaimAction, Actions, Claim, DataHash, DataHasher, GeneratorInfo, HashedUri,
 };
@@ -147,42 +155,14 @@ fn encode_err(e: impl fmt::Display) -> SignError {
 
 type Builder = ManifestStoreBuilder<Vec<u8>>;
 
-enum State {
-    Hashing(DataHasher),
-    AddHardBinding(DataHash),
-    AddActions {
-        builder: Builder,
-        hrefs: Vec<HashedUri>,
-    },
-    BuildClaim {
-        builder: Builder,
-        hrefs: Vec<HashedUri>,
-    },
-    AwaitingSignature {
-        builder: Builder,
-        sign1: CoseSign1,
-        tbs: Vec<u8>,
-    },
-    Finalize {
-        builder: Builder,
-        signature_cbor: Vec<u8>,
-    },
-    Complete(Vec<u8>),
-    Failed,
+enum Request {
+    AssetData(Box<DataHasher>),
+    Signature(Vec<u8>),
 }
 
-impl State {
-    fn phase(&self) -> Phase {
-        match self {
-            Self::Hashing(_) => Phase::HashingAsset,
-            Self::AddHardBinding(_) | Self::AddActions { .. } => Phase::AddingAssertions,
-            Self::BuildClaim { .. } => Phase::BuildingClaim,
-            Self::AwaitingSignature { .. } => Phase::AwaitingSignature,
-            Self::Finalize { .. } => Phase::Finalizing,
-            Self::Complete(_) => Phase::Complete,
-            Self::Failed => Phase::Failed,
-        }
-    }
+enum Response {
+    AssetData(Box<DataHasher>),
+    Signature(Vec<u8>),
 }
 
 fn hashed_uri(a: AssertionHash) -> HashedUri {
@@ -191,9 +171,9 @@ fn hashed_uri(a: AssertionHash) -> HashedUri {
 
 /// See the [module docs](self).
 pub struct SignSession {
-    params: SignParams,
-    state: State,
-    asset_bytes_hashed: u64,
+    workflow: Option<Workflow<Request, Response, Result<Vec<u8>, SignError>>>,
+    progress: Rc<Cell<Progress>>,
+    output: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for SignSession {
@@ -207,200 +187,231 @@ impl fmt::Debug for SignSession {
 impl SignSession {
     pub fn new(params: SignParams) -> Result<Self, SignError> {
         let hasher = DataHash::hasher(&params.data_hash_alg)
-            .ok_or_else(|| SignError::UnknownHashAlgorithm(params.data_hash_alg.clone()))?;
-        Ok(Self {
-            params,
-            state: State::Hashing(hasher),
+            .map_err(|error| SignError::UnknownHashAlgorithm(error.0))?;
+        let progress = Rc::new(Cell::new(Progress {
+            phase: Phase::HashingAsset,
             asset_bytes_hashed: 0,
-        })
+            asset_len: params.asset_len,
+        }));
+        let workflow_progress = Rc::clone(&progress);
+        let workflow =
+            Workflow::new(move |cx| sign_workflow(cx, params, hasher, workflow_progress));
+        let mut session = Self {
+            workflow: Some(workflow),
+            progress,
+            output: None,
+        };
+        session.advance()?;
+        Ok(session)
     }
 
     pub fn progress(&self) -> Progress {
-        Progress {
-            phase: self.state.phase(),
-            asset_bytes_hashed: self.asset_bytes_hashed,
-            asset_len: self.params.asset_len,
-        }
+        self.progress.get()
     }
 
     /// Advance by at most one bounded unit of work, or report what the
     /// caller must supply next. Never blocks.
     pub fn poll(&mut self) -> Result<Action<'_>, SignError> {
-        match self.state {
-            State::Hashing(_) => return Ok(Action::NeedAssetData),
-            State::Complete(_) => return Ok(Action::Complete),
-            State::Failed => return Err(SignError::Failed),
-            State::AwaitingSignature { .. } => {}
-            _ => {
-                self.step()?;
-                return Ok(Action::Continue);
-            }
+        if self.progress().phase == Phase::Complete {
+            return Ok(Action::Complete);
         }
-        match &self.state {
-            State::AwaitingSignature { tbs, .. } => Ok(Action::NeedSignature(tbs)),
-            _ => Err(SignError::Failed),
+        self.advance()?;
+        if self.progress().phase == Phase::Complete {
+            return Ok(Action::Complete);
+        }
+        match self.workflow.as_ref().and_then(Workflow::request) {
+            Some(Request::AssetData(_)) => Ok(Action::NeedAssetData),
+            Some(Request::Signature(tbs)) => Ok(Action::NeedSignature(tbs)),
+            None => Ok(Action::Continue),
         }
     }
 
     /// Hash the next chunk of the asset. Work is proportional to
     /// `chunk.len()`, so the caller bounds each step by its chunk size.
+    /// Does not allocate or copy the chunk, and retains no reference to it.
     pub fn write_asset(&mut self, chunk: &[u8]) -> Result<(), SignError> {
-        let State::Hashing(hasher) = &mut self.state else {
+        let Some(Request::AssetData(hasher)) =
+            self.workflow.as_mut().and_then(Workflow::request_mut)
+        else {
             return Err(self.wrong_phase("write_asset"));
         };
         hasher.update(chunk);
-        self.asset_bytes_hashed = hasher.bytes_hashed();
+        self.progress.set(Progress {
+            asset_bytes_hashed: hasher.bytes_hashed(),
+            ..self.progress.get()
+        });
         Ok(())
     }
 
     /// Signal end of asset input.
     pub fn end_asset(&mut self) -> Result<(), SignError> {
-        if !matches!(self.state, State::Hashing(_)) {
+        if !matches!(
+            self.workflow.as_ref().and_then(Workflow::request),
+            Some(Request::AssetData(_))
+        ) {
             return Err(self.wrong_phase("end_asset"));
         }
-        if let Some(expected) = self.params.asset_len
-            && expected != self.asset_bytes_hashed
-        {
-            self.state = State::Failed;
-            return Err(SignError::AssetLengthMismatch {
-                expected,
-                actual: self.asset_bytes_hashed,
-            });
+        let result = self.workflow.as_mut().unwrap().respond_with(|request| {
+            let Request::AssetData(hasher) = request else {
+                unreachable!("end_asset checked the request kind");
+            };
+            Response::AssetData(hasher)
+        });
+        if result.is_err() {
+            return Err(self.wrong_phase("end_asset"));
         }
-        let State::Hashing(hasher) = std::mem::replace(&mut self.state, State::Failed) else {
-            return Err(SignError::Failed);
-        };
-        self.state = State::AddHardBinding(hasher.finish());
-        Ok(())
+        self.advance()
     }
 
     /// Supply the signature over the bytes from [`Action::NeedSignature`].
     pub fn provide_signature(&mut self, signature: Vec<u8>) -> Result<(), SignError> {
-        if !matches!(self.state, State::AwaitingSignature { .. }) {
+        if !matches!(
+            self.workflow.as_ref().and_then(Workflow::request),
+            Some(Request::Signature(_))
+        ) {
             return Err(self.wrong_phase("provide_signature"));
         }
-        let State::AwaitingSignature {
-            builder, mut sign1, ..
-        } = std::mem::replace(&mut self.state, State::Failed)
-        else {
-            return Err(SignError::Failed);
-        };
-        sign1.signature = signature;
-        // C2PA uses detached content: the claim lives in its own box, so the
-        // COSE payload must be nil. c2pa-rs/c2patool expect the tagged form (CBOR tag 18).
-        sign1.payload = None;
-        let signature_cbor = sign1.to_tagged_vec().map_err(encode_err)?;
-        self.state = State::Finalize {
-            builder,
-            signature_cbor,
-        };
-        Ok(())
+        self.respond(Response::Signature(signature), "provide_signature")
     }
 
     /// Take the finished manifest store bytes.
     pub fn into_store_bytes(self) -> Result<Vec<u8>, SignError> {
-        match self.state {
-            State::Complete(bytes) => Ok(bytes),
-            ref other => Err(SignError::WrongPhase {
+        match self.output {
+            Some(bytes) => Ok(bytes),
+            None => Err(SignError::WrongPhase {
                 called: "into_store_bytes",
-                phase: other.phase(),
+                phase: self.progress.get().phase,
             }),
         }
     }
 
     fn wrong_phase(&self, called: &'static str) -> SignError {
-        match self.state {
-            State::Failed => SignError::Failed,
+        match self.progress().phase {
+            Phase::Failed => SignError::Failed,
             _ => SignError::WrongPhase {
                 called,
-                phase: self.state.phase(),
+                phase: self.progress().phase,
             },
         }
     }
 
-    /// Run one internal (non-caller-dependent) step. On error the state is
-    /// left as `Failed`.
-    fn step(&mut self) -> Result<(), SignError> {
-        let state = std::mem::replace(&mut self.state, State::Failed);
-        self.state = match state {
-            State::AddHardBinding(data_hash) => {
-                let mut builder = Builder::new(Vec::new(), &self.params.manifest_label)?;
-                let cbor = data_hash.to_cbor().map_err(encode_err)?;
-                let href = builder.add_cbor_assertion(DataHash::LABEL, None, &cbor)?;
-                State::AddActions {
-                    builder,
-                    hrefs: vec![hashed_uri(href)],
-                }
-            }
-            State::AddActions {
-                mut builder,
-                mut hrefs,
-            } => {
-                let mut actions = Actions::new();
-                actions.add_action(
-                    ClaimAction::new(ClaimAction::CREATED)
-                        .with_digital_source_type(ClaimAction::DIGITAL_SOURCE_TYPE_EMPTY),
-                );
-                let cbor = actions.to_cbor().map_err(encode_err)?;
-                hrefs.push(hashed_uri(builder.add_cbor_assertion(
-                    Actions::LABEL,
-                    None,
-                    &cbor,
-                )?));
-                State::BuildClaim { builder, hrefs }
-            }
-            State::BuildClaim { mut builder, hrefs } => {
-                let mut claim = Claim::new(
-                    &self.params.manifest_label,
-                    self.params.instance_id.clone(),
-                    self.params.generator.clone(),
-                );
-                claim.alg = Some(ASSERTION_HASH_ALG.to_string());
-                for href in hrefs {
-                    claim.add_created_assertion(href);
-                }
-                let claim_cbor = claim.to_cbor().map_err(encode_err)?;
-                builder.add_claim("c2pa.claim.v2", &claim_cbor)?;
-
-                let x5chain = Value::Array(
-                    self.params
-                        .x5chain
-                        .iter()
-                        .map(|der| Value::Bytes(der.clone()))
-                        .collect(),
-                );
-                let protected = HeaderBuilder::new()
-                    .algorithm(self.params.cose_alg)
-                    .value(COSE_HEADER_X5CHAIN, x5chain)
-                    .build();
-                let sign1 = CoseSign1Builder::new()
-                    .protected(protected)
-                    .payload(claim_cbor)
-                    .build();
-                let tbs = sign1.tbs_data(&[]).map_err(encode_err)?;
-                State::AwaitingSignature {
-                    builder,
-                    sign1,
-                    tbs,
-                }
-            }
-            State::Finalize {
-                mut builder,
-                signature_cbor,
-            } => {
-                builder.add_signature(&signature_cbor)?;
-                State::Complete(builder.finish()?)
-            }
-            // Caller-dependent or terminal states are handled by `poll`.
-            other => other,
+    fn respond(&mut self, response: Response, called: &'static str) -> Result<(), SignError> {
+        let Some(workflow) = &mut self.workflow else {
+            return Err(self.wrong_phase(called));
         };
+        if workflow.respond(response).is_err() {
+            return Err(self.wrong_phase(called));
+        }
+        self.advance()
+    }
+
+    fn advance(&mut self) -> Result<(), SignError> {
+        let Some(workflow) = &mut self.workflow else {
+            return Err(SignError::Failed);
+        };
+        workflow.step();
+        if let Some(result) = workflow.take_output() {
+            self.workflow = None;
+            match result {
+                Ok(bytes) => {
+                    self.output = Some(bytes);
+                    set_phase(&self.progress, Phase::Complete);
+                }
+                Err(error) => {
+                    set_phase(&self.progress, Phase::Failed);
+                    return Err(error);
+                }
+            }
+        }
         Ok(())
     }
+}
+
+fn set_phase(progress: &Cell<Progress>, phase: Phase) {
+    progress.set(Progress {
+        phase,
+        ..progress.get()
+    });
+}
+
+async fn sign_workflow(
+    cx: Context<Request, Response>,
+    params: SignParams,
+    hasher: DataHasher,
+    progress: Rc<Cell<Progress>>,
+) -> Result<Vec<u8>, SignError> {
+    let Response::AssetData(hasher) = cx.request(Request::AssetData(Box::new(hasher))).await else {
+        unreachable!("SignSession only accepts asset responses for asset requests");
+    };
+    if let Some(expected) = params.asset_len
+        && expected != hasher.bytes_hashed()
+    {
+        return Err(SignError::AssetLengthMismatch {
+            expected,
+            actual: hasher.bytes_hashed(),
+        });
+    }
+
+    let data_hash = hasher.finish();
+    set_phase(&progress, Phase::AddingAssertions);
+    cx.checkpoint().await;
+    let mut builder = Builder::new(Vec::new(), &params.manifest_label)?;
+    let cbor = data_hash.to_cbor().map_err(encode_err)?;
+    let href = builder.add_cbor_assertion(DataHash::LABEL, None, &cbor)?;
+    let mut hrefs = vec![hashed_uri(href)];
+    cx.checkpoint().await;
+
+    let mut actions = Actions::new();
+    actions.add_action(
+        ClaimAction::new(ClaimAction::CREATED)
+            .with_digital_source_type(ClaimAction::DIGITAL_SOURCE_TYPE_EMPTY),
+    );
+    let cbor = actions.to_cbor().map_err(encode_err)?;
+    hrefs.push(hashed_uri(builder.add_cbor_assertion(
+        Actions::LABEL,
+        None,
+        &cbor,
+    )?));
+    set_phase(&progress, Phase::BuildingClaim);
+    cx.checkpoint().await;
+
+    let mut claim = Claim::new(&params.manifest_label, params.instance_id, params.generator);
+    claim.alg = Some(ASSERTION_HASH_ALG.to_string());
+    for href in hrefs {
+        claim.add_created_assertion(href);
+    }
+    let claim_cbor = claim.to_cbor().map_err(encode_err)?;
+    builder.add_claim("c2pa.claim.v2", &claim_cbor)?;
+    let x5chain = Value::Array(params.x5chain.into_iter().map(Value::Bytes).collect());
+    let protected = HeaderBuilder::new()
+        .algorithm(params.cose_alg)
+        .value(COSE_HEADER_X5CHAIN, x5chain)
+        .build();
+    let mut sign1 = CoseSign1Builder::new()
+        .protected(protected)
+        .payload(claim_cbor)
+        .build();
+    let tbs = sign1.tbs_data(&[]).map_err(encode_err)?;
+    set_phase(&progress, Phase::AwaitingSignature);
+    cx.checkpoint().await;
+
+    let Response::Signature(signature) = cx.request(Request::Signature(tbs)).await else {
+        unreachable!("SignSession only accepts signatures for signature requests");
+    };
+    sign1.signature = signature;
+    sign1.payload = None;
+    let signature_cbor = sign1.to_tagged_vec().map_err(encode_err)?;
+    set_phase(&progress, Phase::Finalizing);
+    cx.checkpoint().await;
+
+    builder.add_signature(&signature_cbor)?;
+    Ok(builder.finish()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use c2pa_cbor::cose::CoseSign1;
     use c2pa_store::ManifestStore;
 
     const ASSET: &[u8] = b"some asset bytes that get hashed in pieces";
@@ -463,9 +474,37 @@ mod tests {
                 .unwrap()
                 .hash
         );
-        let sign1 = CoseSign1::from_tagged_slice(manifest.signature_cose().unwrap()).unwrap();
+        let mut sign1 = CoseSign1::from_tagged_slice(manifest.signature_cose().unwrap()).unwrap();
         assert_eq!(sign1.signature, vec![0xAB; 64]);
         assert!(sign1.payload.is_none(), "C2PA requires a detached payload");
+        sign1.payload = Some(manifest.claim_cbor().unwrap().to_vec());
+        assert_eq!(sign1.tbs_data(&[]).unwrap(), tbs_a);
+    }
+
+    #[test]
+    fn borrowed_stream_buffer_can_be_overwritten_and_dropped_between_steps() {
+        let mut s = SignSession::new(params(Some(ASSET.len() as u64))).unwrap();
+        {
+            let mut buffer = [0u8; 7];
+            for chunk in ASSET.chunks(buffer.len()) {
+                buffer[..chunk.len()].copy_from_slice(chunk);
+                s.write_asset(&buffer[..chunk.len()]).unwrap();
+                buffer.fill(0xFF);
+                assert_eq!(s.poll().unwrap(), Action::NeedAssetData);
+            }
+            s.write_asset(&[]).unwrap();
+        }
+        assert_eq!(s.progress().asset_bytes_hashed, ASSET.len() as u64);
+        s.end_asset().unwrap();
+        loop {
+            match s.poll().unwrap() {
+                Action::Continue => {}
+                Action::NeedSignature(_) => s.provide_signature(vec![0xAB; 64]).unwrap(),
+                Action::Complete => break,
+                other => panic!("unexpected action: {other:?}"),
+            }
+        }
+        assert_eq!(s.into_store_bytes().unwrap(), run(7).0);
     }
 
     #[test]
@@ -547,5 +586,36 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn requests_can_wait_and_completion_is_repeatable() {
+        let mut s = SignSession::new(params(Some(0))).unwrap();
+        for _ in 0..3 {
+            assert_eq!(s.poll().unwrap(), Action::NeedAssetData);
+            assert_eq!(s.progress().asset_bytes_hashed, 0);
+        }
+        s.end_asset().unwrap();
+        let tbs = loop {
+            match s.poll().unwrap() {
+                Action::Continue => {}
+                Action::NeedSignature(tbs) => break tbs.to_vec(),
+                other => panic!("unexpected action: {other:?}"),
+            }
+        };
+        for _ in 0..3 {
+            assert_eq!(s.poll().unwrap(), Action::NeedSignature(&tbs));
+        }
+        assert!(matches!(s.end_asset(), Err(SignError::WrongPhase { .. })));
+        s.provide_signature(vec![0xAB; 64]).unwrap();
+        assert_eq!(s.progress().phase, Phase::Finalizing);
+        assert!(matches!(
+            s.provide_signature(vec![]),
+            Err(SignError::WrongPhase { .. })
+        ));
+        assert_eq!(s.poll().unwrap(), Action::Complete);
+        assert_eq!(s.progress().phase, Phase::Complete);
+        assert_eq!(s.poll().unwrap(), Action::Complete);
+        assert!(ManifestStore::parse(&s.into_store_bytes().unwrap()).is_ok());
     }
 }

@@ -5,7 +5,7 @@
 use std::io::Cursor;
 
 use c2pa_cbor::Value;
-use c2pa_claim::{Claim, DataHash, GeneratorInfo};
+use c2pa_claim::{Claim, DataHash, GeneratorInfo, UnsupportedHashAlgorithm};
 use c2pa_store::ManifestStore;
 use sha2::{Digest, Sha256};
 
@@ -113,14 +113,18 @@ fn plugs_into_a_real_manifest_and_verifies() {
 
 #[test]
 fn incremental_hasher_matches_from_reader_for_any_chunking() {
-    let expected = DataHash::from_reader("sha256", Cursor::new(ASSET)).unwrap();
-    for chunk in [1, 5, ASSET.len()] {
-        let mut h = DataHash::hasher("sha256").unwrap();
-        for piece in ASSET.chunks(chunk) {
-            h.update(piece);
+    for alg in ["sha256", "sha384", "sha512"] {
+        let expected = DataHash::from_reader(alg, Cursor::new(ASSET)).unwrap();
+        for chunk in [1, 5, ASSET.len()] {
+            let mut h = DataHash::hasher(alg).unwrap();
+            for piece in ASSET.chunks(chunk) {
+                h.update(piece);
+            }
+            assert_eq!(h.bytes_hashed(), ASSET.len() as u64);
+            assert_eq!(h.finish(), expected);
         }
-        assert_eq!(h.bytes_hashed(), ASSET.len() as u64);
-        assert_eq!(h.finish(), expected);
     }
-    assert!(DataHash::hasher("md5").is_none());
+    let error = DataHash::hasher("md5").unwrap_err();
+    assert_eq!(error, UnsupportedHashAlgorithm("md5".to_string()));
+    assert_eq!(error.to_string(), "unsupported hash algorithm: md5");
 }

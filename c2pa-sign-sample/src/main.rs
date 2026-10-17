@@ -11,17 +11,20 @@
 //! can be told to trust it for local testing, e.g.
 //! `c2patool trust --trust_anchors <sidecar>.ca.pem`.
 //!
-//! The work runs through [`sign_session::SignSession`], a caller-driven state
-//! machine: this `main` loop reads the file in chunks, feeds them in, reports
+//! The work runs through [`sign_session::SignSession`], a caller-driven async
+//! workflow: this `main` loop reads the file in chunks, feeds them in, reports
 //! progress, and answers the session's request for a signature. Nothing is a
 //! callback and nothing assumes a thread model or async runtime -- the same
 //! session could be driven from an event loop, an async task, or a UI tick,
 //! and cancelled at any yield point by dropping it.
+//! Internally, the compiler retains workflow locals across `.await` points;
+//! [`workflow`] bridges requests and explicit checkpoints to this manual driver.
 //!
 //! Usage: `cargo run -- <path-to-file>`
 
 mod ephemeral_cert;
 mod sign_session;
+mod workflow;
 
 use std::env;
 use std::fs::File;

@@ -89,9 +89,9 @@ impl DataHash {
     /// Start an incremental data hash under `alg`, for callers that want to
     /// feed the asset in chunks on their own schedule (e.g. from a state
     /// machine or async task) instead of handing over a blocking reader.
-    /// `None` if the algorithm identifier is not recognized.
-    pub fn hasher(alg: &str) -> Option<DataHasher> {
-        Some(DataHasher {
+    /// Returns [`hash::UnsupportedHashAlgorithm`] if the identifier is unsupported.
+    pub fn hasher(alg: &str) -> Result<DataHasher, hash::UnsupportedHashAlgorithm> {
+        Ok(DataHasher {
             alg: alg.to_string(),
             digest: hash::IncrementalDigest::new(alg)?,
             bytes_hashed: 0,

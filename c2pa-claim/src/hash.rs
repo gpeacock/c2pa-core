@@ -6,6 +6,18 @@
 
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
+/// An algorithm identifier is not supported by this crate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnsupportedHashAlgorithm(pub String);
+
+impl core::fmt::Display for UnsupportedHashAlgorithm {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unsupported hash algorithm: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnsupportedHashAlgorithm {}
+
 /// Compute the digest of `data` under the named algorithm, or `None` if the
 /// algorithm identifier is not recognized.
 pub fn digest(alg: &str, data: &[u8]) -> Option<Vec<u8>> {
@@ -64,14 +76,13 @@ pub enum IncrementalDigest {
 }
 
 impl IncrementalDigest {
-    /// Start a digest, or `None` if the algorithm identifier is not
-    /// recognized.
-    pub fn new(alg: &str) -> Option<Self> {
+    /// Start a digest, returning an error if the identifier is unsupported.
+    pub fn new(alg: &str) -> Result<Self, UnsupportedHashAlgorithm> {
         match alg {
-            "sha256" => Some(Self::Sha256(Sha256::new())),
-            "sha384" => Some(Self::Sha384(Sha384::new())),
-            "sha512" => Some(Self::Sha512(Sha512::new())),
-            _ => None,
+            "sha256" => Ok(Self::Sha256(Sha256::new())),
+            "sha384" => Ok(Self::Sha384(Sha384::new())),
+            "sha512" => Ok(Self::Sha512(Sha512::new())),
+            _ => Err(UnsupportedHashAlgorithm(alg.to_string())),
         }
     }
 

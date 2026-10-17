@@ -33,4 +33,5 @@ pub use actions::{Action, Actions};
 pub use claim::Claim;
 pub use data_hash::{DataHash, DataHasher, HashRange};
 pub use generator_info::GeneratorInfo;
+pub use hash::UnsupportedHashAlgorithm;
 pub use hashed_uri::{HashedUri, VerifyError};

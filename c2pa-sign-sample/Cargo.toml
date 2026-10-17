@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 c2pa-claim = { version = "0.0.0", path = "../c2pa-claim" }
 c2pa-store = { version = "0.0.0", path = "../c2pa-store", features = ["write", "std"] }
-c2pa_cbor = { git = "https://github.com/contentauth/c2pa-cbor", branch = "gpeacock/cose-support", features = ["cose"] }
+c2pa_cbor = { version = "0.78.1", features = ["cose"] }
 ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 rcgen = { version = "0.14.10", default-features = false, features = ["pem"] }
