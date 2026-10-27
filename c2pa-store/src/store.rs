@@ -52,6 +52,11 @@ impl<'a> ManifestStore<'a> {
         self.root.raw
     }
 
+    /// The complete structural tree, including descriptions and unknown boxes.
+    pub fn root(&self) -> &SuperBox<'a> {
+        &self.root
+    }
+
     /// Iterate over the manifests in the store (boxes whose content type is a
     /// manifest type), in order.
     pub fn manifests(&self) -> impl Iterator<Item = Manifest<'_, 'a>> {

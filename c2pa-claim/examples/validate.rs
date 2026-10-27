@@ -1,6 +1,7 @@
-//! Validate the assertion hashed-URIs in a real `.c2pa` manifest store.
+//! Validate the assertion hashed-URIs in a real `.c2pa` manifest store or a
+//! supported media file containing an embedded C2PA manifest.
 //!
-//! Usage: `cargo run --example validate -- <path-to.c2pa>`
+//! Usage: `cargo run --example validate -- <path-to.c2pa|media-file>`
 //!
 //! Decodes the active manifest's claim permissively (works for both v1
 //! `assertions` and v2 `created_assertions`/`gathered_assertions`), then
@@ -28,14 +29,39 @@ struct AnyClaim {
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: validate <path-to.c2pa>");
+        eprintln!("usage: validate <path-to.c2pa|media-file>");
         return ExitCode::FAILURE;
     };
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("read {path}: {e}");
-            return ExitCode::FAILURE;
+    let path_buf = std::path::Path::new(&path);
+    let bytes = if path_buf
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("c2pa"))
+    {
+        match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        let mut asset = match asset_io::Asset::open(&path) {
+            Ok(asset) => asset,
+            Err(e) => {
+                eprintln!("open media file {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match asset.jumbf() {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                eprintln!("no C2PA manifest found in {path}");
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!("extract C2PA manifest from {path}: {e}");
+                return ExitCode::FAILURE;
+            }
         }
     };
 

@@ -17,6 +17,8 @@ use crate::uuids::{classify, ContentType};
 /// A description box (`jumd`): identifies a superbox's type and label.
 #[derive(Debug, Clone, Copy)]
 pub struct Description<'a> {
+    /// The full span of the `jumd` box, including its original header.
+    pub raw: &'a [u8],
     /// The 16-byte content-type UUID (the authoritative type discriminator).
     pub uuid: [u8; 16],
     /// The raw toggle byte.
@@ -38,6 +40,8 @@ impl Description<'_> {
 /// `json`, or embedded data. Its `data` borrows from the input.
 #[derive(Debug, Clone, Copy)]
 pub struct ContentBox<'a> {
+    /// The full span of this box, including its original header.
+    pub raw: &'a [u8],
     /// The 4-byte box type.
     pub tbox: [u8; 4],
     /// The box payload (everything after the header).
@@ -128,8 +132,8 @@ fn parse_box<'a>(r: &mut BoxReader<'a>) -> Result<RawBox<'a>, Error> {
     })
 }
 
-fn parse_description(payload: &[u8]) -> Result<Description<'_>, Error> {
-    let mut r = BoxReader::new(payload);
+fn parse_description(raw: RawBox<'_>) -> Result<Description<'_>, Error> {
+    let mut r = BoxReader::new(raw.payload);
     let uuid = r.array16()?;
     let toggles = r.u8()?;
 
@@ -158,6 +162,7 @@ fn parse_description(payload: &[u8]) -> Result<Description<'_>, Error> {
     };
 
     Ok(Description {
+        raw: raw.total,
         uuid,
         toggles,
         label,
@@ -184,7 +189,7 @@ fn parse_superbox<'a>(
     if first.tbox != BOX_JUMD {
         return Err(Error::MissingDescription);
     }
-    let description = parse_description(first.payload)?;
+    let description = parse_description(first)?;
 
     let mut children = Vec::new();
     let mut count: usize = 0;
@@ -220,6 +225,7 @@ fn parse_node<'a>(
         Ok(Node::Super(parse_superbox(raw, next, limits, budget)?))
     } else {
         Ok(Node::Content(ContentBox {
+            raw: raw.total,
             tbox: raw.tbox,
             data: raw.payload,
         }))

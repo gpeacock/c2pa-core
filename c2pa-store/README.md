@@ -96,6 +96,26 @@ if let Some(m) = store.active_manifest() {
 }
 ```
 
+## Expanded text dump
+
+For a fully expanded JUMBF tree with decoded CBOR and JSON payloads:
+
+```sh
+cargo run -p c2pa-claim --example dump -- path/to/store.c2pa
+```
+
+The input is a raw `.c2pa` manifest store, not a JPEG/PNG container. The dump
+includes box sizes (including original headers), labels, type UUIDs, salts,
+CBOR tags, maps, arrays, and scalar values. Binary values show their byte
+length and a hex preview of up to 32 bytes; longer values are marked `...`.
+Unknown boxes and compressed payloads remain binary. Payload decode errors
+are printed and cause a nonzero exit status. The existing claim summaries
+and assertion hashed-URI checks follow the tree.
+
+The structural parser still performs no CBOR/JSON decoding. Consumers can walk
+`ManifestStore::root()` and use `Description::raw` and `ContentBox::raw` for
+borrowed full box spans, alongside the existing payload views.
+
 ## Fuzzing
 
 `cargo +nightly fuzz run parse` (needs `cargo install cargo-fuzz`). The target

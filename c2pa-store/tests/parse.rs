@@ -94,6 +94,41 @@ fn store_with_assertion(assertion: Vec<u8>) -> Vec<u8> {
 const COSE: &[u8] = &[0xD2, 0x84, 0x40, 0xA0]; // stand-in COSE_Sign1 bytes
 const SALT: &[u8] = &[7u8; 16];
 
+#[test]
+fn structural_tree_retains_original_box_spans() {
+    let payload = [0xa0];
+    let mut extended = 1u32.to_be_bytes().to_vec();
+    extended.extend_from_slice(b"cbor");
+    extended.extend_from_slice(&17u64.to_be_bytes());
+    extended.extend_from_slice(&payload);
+    let mut to_end = 0u32.to_be_bytes().to_vec();
+    to_end.extend_from_slice(b"zzzz");
+    to_end.extend_from_slice(&[1, 2, 3]);
+    let description = jumd(&uuids::MANIFEST_STORE, "c2pa", Some(SALT));
+    let bytes = superbox(
+        &uuids::MANIFEST_STORE,
+        "c2pa",
+        Some(SALT),
+        &[extended.clone(), to_end.clone()],
+    );
+    let store = ManifestStore::parse(&bytes).unwrap();
+    let root = store.root();
+    assert_eq!(root.raw, bytes);
+    assert_eq!(root.raw.as_ptr(), bytes.as_ptr());
+    assert_eq!(root.description.raw, description);
+    assert_eq!(root.description.raw.as_ptr(), bytes[8..].as_ptr());
+    let children: Vec<_> = root.content_children().collect();
+    for (child, original) in children.iter().zip([extended, to_end]) {
+        assert_eq!(child.raw, original);
+        assert_eq!(
+            child.data.as_ptr(),
+            child.raw[child.raw.len() - child.data.len()..].as_ptr()
+        );
+    }
+    assert_eq!(children[0].data, payload);
+    assert_eq!(children[1].data, [1, 2, 3]);
+}
+
 /// A complete, minimal, valid manifest store with one standard manifest.
 fn sample_store() -> Vec<u8> {
     let claim = superbox(
