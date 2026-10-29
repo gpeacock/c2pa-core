@@ -97,6 +97,25 @@ impl Claim {
         self.created_assertions.push(assertion);
     }
 
+    /// Set the hash of the assertion reference whose `url` is `url`, after the
+    /// assertion it refers to was updated in place. Returns `false` if the claim
+    /// has no such reference.
+    pub fn update_assertion_hash(&mut self, url: &str, hash: &[u8]) -> bool {
+        let gathered = self.gathered_assertions.iter_mut().flatten();
+        match self
+            .created_assertions
+            .iter_mut()
+            .chain(gathered)
+            .find(|a| a.url() == url)
+        {
+            Some(reference) => {
+                reference.set_hash(hash.to_vec());
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Encode to deterministic (canonical) CBOR — the form that gets hashed and
     /// signed, as C2PA requires.
     pub fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {

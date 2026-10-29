@@ -1,5 +1,6 @@
 //! C2PA claim and hashed-URI support: the CBOR-backed semantic layer built on
-//! top of the structural [`c2pa_store`] (JUMBF) crate.
+//! top of the structural [`c2pa_store`] (JUMBF) crate. The assertions a claim
+//! references live in the `c2pa-assertions` crate, which builds on this one.
 //!
 //! See `PRINCIPLES.md` in this crate's repository root for the priorities
 //! this crate family (this crate, [`c2pa_store`], [`c2pa_cbor`]) is held to
@@ -12,24 +13,19 @@
 //! dependency-bearing pieces live: [`c2pa_cbor`] for CBOR, `sha2` for hashing.
 //! The public API here is kept std-light (borrow `&[u8]`/`&str`, no `std::io`
 //! in signatures) with one deliberate exception, gated behind the `std`
-//! feature (on by default): [`DataHash::from_reader`] and
-//! `hash::digest_reader`, for streaming a whole asset's hash without
-//! buffering it (see [`DataHash`]).
+//! feature (on by default): [`hash::digest_reader`], for streaming a whole
+//! asset's hash without buffering it.
 //!
 //! `no_std` is not a current goal of this crate family, but this std-light
 //! boundary is kept anyway: it costs little, keeps the door open for a
 //! future embedded consumer, and [`c2pa_cbor`] would need its own `no_std`
 //! support before it mattered here regardless.
 
-mod actions;
 mod claim;
-mod data_hash;
 mod generator_info;
-mod hash;
+pub mod hash;
 mod hashed_uri;
 
-pub use actions::{Action, Actions};
 pub use claim::Claim;
-pub use data_hash::{DataHash, HashRange};
 pub use generator_info::GeneratorInfo;
 pub use hashed_uri::{HashedUri, VerifyError};

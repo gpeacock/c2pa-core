@@ -1,4 +1,5 @@
-//! Cryptographic hashing for C2PA hashed-URI validation.
+//! Hashing with the C2PA hash algorithms, shared by hashed URIs and the hash
+//! assertions in `c2pa-assertions`.
 //!
 //! Only the algorithms in the C2PA data-hash algorithm registry are supported.
 //! The `alg` strings are the registry identifiers (`sha256`, `sha384`,
@@ -21,7 +22,7 @@ pub fn digest(alg: &str, data: &[u8]) -> Option<Vec<u8>> {
 /// reading in bounded chunks so the source never has to be fully in memory
 /// (e.g. hashing a whole asset file for a `c2pa.hash.data` assertion).
 ///
-/// Errs with [`io::ErrorKind::InvalidInput`] if the algorithm identifier is
+/// Errs with [`std::io::ErrorKind::InvalidInput`] if the algorithm identifier is
 /// not recognized, or propagates the reader's own I/O errors.
 ///
 /// Requires the `std` feature (the only place in this crate that needs

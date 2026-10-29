@@ -68,6 +68,9 @@ pub enum Error {
     /// source or supplied chunk-by-chunk via
     /// `EmbeddedFileAssertionWriter::write_chunk`.
     LengthMismatch,
+    /// (write) An in-place edit would change a box's length, which would move
+    /// everything after it.
+    SizeChanged,
 }
 
 impl fmt::Display for Error {
@@ -102,6 +105,9 @@ impl fmt::Display for Error {
             }
             Error::ReadFailed => "input reader failed",
             Error::LengthMismatch => "declared embedded-file length didn't match bytes written",
+            Error::SizeChanged => {
+                "replacement is not the same length as the box content it replaces"
+            }
         };
         f.write_str(msg)
     }

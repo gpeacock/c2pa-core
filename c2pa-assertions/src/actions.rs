@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::Assertion;
+
 /// A single action taken on the asset (`action-map` in the CDDL).
 ///
 /// Wire-compatible with `c2pa-rs`'s `Action`: field names match exactly.
@@ -59,7 +61,7 @@ impl Action {
 ///
 /// A valid actions assertion needs at least one action; validators also
 /// require a [`Action::CREATED`] action to carry a `digitalSourceType`. This
-/// type doesn't enforce either -- construction mirrors [`crate::Claim`],
+/// type doesn't enforce either -- construction mirrors [`c2pa_claim::Claim`],
 /// which is likewise permissive and leaves validation to the caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Actions {
@@ -82,15 +84,18 @@ impl Actions {
     pub fn add_action(&mut self, action: Action) {
         self.actions.push(action);
     }
+}
 
-    /// Encode to deterministic (canonical) CBOR — the form that gets hashed
-    /// and signed, as C2PA requires.
-    pub fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
+impl Assertion for Actions {
+    fn label(&self) -> &str {
+        Self::LABEL
+    }
+
+    fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
         c2pa_cbor::to_vec_deterministic(self)
     }
 
-    /// Decode an actions assertion from CBOR bytes.
-    pub fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
+    fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
         c2pa_cbor::from_slice(bytes)
     }
 }
