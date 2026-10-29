@@ -22,6 +22,8 @@
 //! support before it mattered here regardless.
 
 mod actions;
+mod binding;
+mod box_hash;
 mod claim;
 mod data_hash;
 mod generator_info;
@@ -29,7 +31,11 @@ mod hash;
 mod hashed_uri;
 
 pub use actions::{Action, Actions};
+pub use binding::HardBinding;
+pub use box_hash::{
+    AssetBox, BoxExclusion, BoxHash, BoxHashError, BoxHashReport, BoxMap, C2PA_BOX,
+};
 pub use claim::Claim;
-pub use data_hash::{DataHash, HashRange};
+pub use data_hash::{DataHash, HashRange, PadError};
 pub use generator_info::GeneratorInfo;
 pub use hashed_uri::{HashedUri, VerifyError};

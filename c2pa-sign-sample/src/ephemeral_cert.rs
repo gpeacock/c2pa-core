@@ -25,15 +25,15 @@ struct Ed25519KeyPair {
 }
 
 impl Ed25519KeyPair {
-    fn generate() -> Self {
+    fn generate() -> crate::Result<Self> {
         let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed).expect("failed to generate Ed25519 key seed");
+        getrandom::fill(&mut seed)?;
         let signing_key = Ed25519SigningKey::from_bytes(&seed);
         let public_key_bytes = signing_key.verifying_key().to_bytes();
-        Self {
+        Ok(Self {
             signing_key,
             public_key_bytes,
-        }
+        })
     }
 }
 
@@ -73,38 +73,36 @@ fn common_name(name: &str) -> DistinguishedName {
 /// Without the `crypto` feature, `rcgen` has no RNG of its own to generate a
 /// serial number, so callers must supply one. A DER INTEGER's sign is its
 /// high bit, so it's cleared to keep this unambiguously positive.
-fn random_serial_number() -> SerialNumber {
+fn random_serial_number() -> crate::Result<SerialNumber> {
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("failed to generate certificate serial number");
+    getrandom::fill(&mut bytes)?;
     bytes[0] &= 0x7f;
-    SerialNumber::from_slice(&bytes)
+    Ok(SerialNumber::from_slice(&bytes))
 }
 
 /// Generate a fresh, throwaway self-signed CA and an end-entity certificate
 /// it signs -- both Ed25519, both good for one process's lifetime only.
-pub fn generate_ephemeral_chain(ee_common_name: &str) -> EphemeralChain {
+pub fn generate_ephemeral_chain(ee_common_name: &str) -> crate::Result<EphemeralChain> {
     let now = OffsetDateTime::now_utc();
     let not_before = now - Duration::days(1);
     let not_after = now + Duration::days(365);
 
-    let ca_key = Ed25519KeyPair::generate();
+    let ca_key = Ed25519KeyPair::generate()?;
     let mut ca_params = CertificateParams::default();
     ca_params.distinguished_name = common_name("c2pa-sign-sample ephemeral CA (local use only)");
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    ca_params.serial_number = Some(random_serial_number());
+    ca_params.serial_number = Some(random_serial_number()?);
     ca_params.not_before = not_before;
     ca_params.not_after = not_after;
-    let ca_cert: Certificate = ca_params
-        .self_signed(&ca_key)
-        .expect("build self-signed CA certificate");
+    let ca_cert: Certificate = ca_params.self_signed(&ca_key)?;
 
-    let ee_key = Ed25519KeyPair::generate();
+    let ee_key = Ed25519KeyPair::generate()?;
     let mut ee_params = CertificateParams::default();
     ee_params.distinguished_name = common_name(ee_common_name);
     ee_params.is_ca = rcgen::IsCa::ExplicitNoCa;
     ee_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    ee_params.serial_number = Some(random_serial_number());
+    ee_params.serial_number = Some(random_serial_number()?);
     ee_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::EmailProtection];
     ee_params.not_before = not_before;
     ee_params.not_after = not_after;
@@ -112,14 +110,12 @@ pub fn generate_ephemeral_chain(ee_common_name: &str) -> EphemeralChain {
     // the end-entity cert; rcgen only writes it when asked (default is off).
     ee_params.use_authority_key_identifier_extension = true;
     let issuer = Issuer::from_params(&ca_params, &ca_key);
-    let ee_cert: Certificate = ee_params
-        .signed_by(&ee_key, &issuer)
-        .expect("build end-entity certificate signed by ephemeral CA");
+    let ee_cert: Certificate = ee_params.signed_by(&ee_key, &issuer)?;
 
-    EphemeralChain {
+    Ok(EphemeralChain {
         ee_der: ee_cert.der().to_vec(),
         ca_der: ca_cert.der().to_vec(),
         ca_pem: ca_cert.pem(),
         ee_signing_key: ee_key.signing_key,
-    }
+    })
 }

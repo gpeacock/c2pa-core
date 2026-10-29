@@ -140,3 +140,22 @@ fn generator_info_optionals_round_trip() {
         Some("2.1".to_string())
     );
 }
+
+#[test]
+fn update_assertion_hash_replaces_only_the_referenced_hash() {
+    let mut claim = Claim::new("urn:c2pa:test", "xmp:iid:test", GeneratorInfo::new("test"));
+    let url = "self#jumbf=c2pa.assertions/c2pa.hash.data";
+    claim.add_created_assertion(HashedUri::new(url, None, &[0; 32]));
+    claim.add_created_assertion(HashedUri::new(
+        "self#jumbf=c2pa.assertions/c2pa.actions.v2",
+        None,
+        &[7; 32],
+    ));
+    let before = claim.to_cbor().unwrap().len();
+    assert!(claim.update_assertion_hash(url, &[1; 32]));
+    assert!(!claim.update_assertion_hash("self#jumbf=c2pa.assertions/missing", &[1; 32]));
+    assert_eq!(claim.created_assertions[0].hash(), &[1; 32]);
+    assert_eq!(claim.created_assertions[1].hash(), &[7; 32]);
+    // Same-length hashes keep the claim the same length, so it can be updated in place.
+    assert_eq!(claim.to_cbor().unwrap().len(), before);
+}

@@ -52,6 +52,11 @@ impl<'a> ManifestStore<'a> {
         self.root.raw
     }
 
+    /// The full structural tree, including unknown boxes.
+    pub fn root(&self) -> &SuperBox<'a> {
+        &self.root
+    }
+
     /// Iterate over the manifests in the store (boxes whose content type is a
     /// manifest type), in order.
     pub fn manifests(&self) -> impl Iterator<Item = Manifest<'_, 'a>> {
@@ -314,6 +319,12 @@ impl<'m, 'a> Assertion<'m, 'a> {
     /// The assertion's salt, if present in its description box.
     pub fn salt(&self) -> Option<&'a [u8]> {
         self.sb.salt()
+    }
+
+    /// The bytes a hashed URI to this assertion covers: the assertion superbox
+    /// after its own header, description box included.
+    pub fn hashed_bytes(&self) -> &'a [u8] {
+        self.sb.payload()
     }
 
     /// The assertion's typed content.

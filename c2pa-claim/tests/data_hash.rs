@@ -5,7 +5,7 @@
 use std::io::Cursor;
 
 use c2pa_cbor::Value;
-use c2pa_claim::{Claim, DataHash, GeneratorInfo};
+use c2pa_claim::{Claim, DataHash, GeneratorInfo, HashRange, PadError};
 use c2pa_store::ManifestStore;
 use sha2::{Digest, Sha256};
 
@@ -109,4 +109,76 @@ fn plugs_into_a_real_manifest_and_verifies() {
     assert_eq!(assertion.label(), Some(DataHash::LABEL));
     let decoded_dh = DataHash::from_cbor(assertion.payload().unwrap().data).unwrap();
     assert_eq!(decoded_dh, dh);
+}
+
+#[test]
+fn pad_to_size_reaches_every_length_across_prefix_boundaries() {
+    let mut dh = DataHash::new("sha256", vec![7; 32]);
+    let base = dh.to_cbor().unwrap().len();
+    let targets = (base..base + 600).chain(base + 65_520..base + 65_560);
+    for target in targets {
+        dh.pad_to_size(target).unwrap();
+        let bytes = dh.to_cbor().unwrap();
+        assert_eq!(bytes.len(), target);
+        assert_eq!(DataHash::from_cbor(&bytes).unwrap(), dh);
+    }
+    // Only the totals one byte string cannot reach use the second pad.
+    dh.pad_to_size(base + 24).unwrap();
+    assert!(dh.pad2.is_some());
+    dh.pad_to_size(base + 23).unwrap();
+    assert_eq!(dh.pad2, None);
+}
+
+#[test]
+fn reserved_exclusions_fit_any_real_values() {
+    let mut placeholder = DataHash::new("sha256", vec![0; 32]);
+    placeholder.reserve_exclusions(2);
+    let reserved = placeholder.to_cbor().unwrap().len();
+    for (start, length) in [(0, 0), (23, 24), (255, 65_536), (u32::MAX as u64 + 1, 1)] {
+        let mut real = DataHash::new("sha256", vec![9; 32]);
+        real.exclusions = Some(vec![
+            HashRange { start, length },
+            HashRange {
+                start: start + 1,
+                length,
+            },
+        ]);
+        real.pad_to_size(reserved).unwrap();
+        assert_eq!(real.to_cbor().unwrap().len(), reserved);
+    }
+}
+
+#[test]
+fn pad_to_size_rejects_a_target_below_the_unpadded_length() {
+    let mut dh = DataHash::new("sha256", vec![0; 32]);
+    let base = dh.to_cbor().unwrap().len();
+    assert!(matches!(
+        dh.pad_to_size(base - 1),
+        Err(PadError::TooLarge { minimum, target }) if minimum == base && target == base - 1
+    ));
+}
+
+#[test]
+fn placeholder_updates_in_place_to_the_same_length() {
+    let mut binding = DataHash::placeholder("sha384", 2).unwrap();
+    assert_eq!(binding.hash, vec![0; 48]);
+    let reserved = binding.to_cbor().unwrap().len();
+    binding
+        .update(
+            vec![
+                HashRange {
+                    start: 2,
+                    length: 300,
+                },
+                HashRange {
+                    start: 70_000,
+                    length: 5,
+                },
+            ],
+            vec![1; 48],
+        )
+        .unwrap();
+    assert_eq!(binding.to_cbor().unwrap().len(), reserved);
+    assert_eq!(binding.exclusions.as_ref().unwrap()[1].start, 70_000);
+    assert!(DataHash::placeholder("md5", 1).is_none());
 }

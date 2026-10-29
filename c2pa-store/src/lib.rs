@@ -63,6 +63,8 @@ extern crate std;
 mod box_reader;
 #[cfg(feature = "write")]
 mod box_writer;
+#[cfg(feature = "write")]
+mod editor;
 mod error;
 pub mod format;
 mod jumbf;
@@ -77,6 +79,8 @@ pub mod uuids;
 pub use box_writer::IoSink;
 #[cfg(feature = "write")]
 pub use box_writer::{BoxWriter, SeekSink, Sink};
+#[cfg(feature = "write")]
+pub use editor::ManifestStoreEditor;
 pub use error::Error;
 pub use jumbf::{ContentBox, Description, Node, SuperBox};
 pub use jumbf_uri::JumbfUri;
