@@ -1,8 +1,9 @@
 //! Tests for the `c2pa.actions.v2` assertion: CBOR field names and how it
 //! plugs into a real manifest via `c2pa_store::ManifestStoreBuilder`.
 
+use c2pa_assertions::{Action, Actions, Assertion};
 use c2pa_cbor::Value;
-use c2pa_claim::{Action, Actions, Claim, GeneratorInfo, HashedUri};
+use c2pa_claim::{Claim, GeneratorInfo, HashedUri};
 use c2pa_store::ManifestStore;
 
 /// The top-level keys of a CBOR map, as strings.

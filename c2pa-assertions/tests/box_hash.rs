@@ -3,8 +3,10 @@
 
 use std::io::Cursor;
 
+use c2pa_assertions::{
+    Assertion, AssetBox, BoxExclusion, BoxHash, BoxHashError, HashRange, C2PA_BOX,
+};
 use c2pa_cbor::Value;
-use c2pa_claim::{AssetBox, BoxExclusion, BoxHash, BoxHashError, HashRange, C2PA_BOX};
 
 /// `SOI` (2 bytes), the store (6), `SOS` (10, bytes 10..14 being metadata), `EOI` (2).
 const ASSET: &[u8] = b"\xff\xd8STORE!scan-data!\xff\xd9";

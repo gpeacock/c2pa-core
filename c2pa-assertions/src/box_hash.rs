@@ -6,8 +6,10 @@
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
+use c2pa_claim::hash;
+
 use crate::data_hash::HashRange;
-use crate::hash;
+use crate::Assertion;
 
 /// The name a box hash lists the C2PA manifest store under, whatever the
 /// container calls the element holding it. Its entry is never hashed.
@@ -131,17 +133,6 @@ impl BoxHash {
             })
             .collect();
         Some(Self { boxes, alg: None })
-    }
-
-    /// Encode to deterministic (canonical) CBOR — the form that gets hashed
-    /// and signed, as C2PA requires.
-    pub fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
-        c2pa_cbor::to_vec_deterministic(self)
-    }
-
-    /// Decode a box-hash assertion from CBOR bytes.
-    pub fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
-        c2pa_cbor::from_slice(bytes)
     }
 
     /// Hash each entry's boxes in `asset`, whose boxes are `boxes`, keeping the
@@ -350,6 +341,20 @@ impl BoxHash {
         } else {
             BoxHashError::UnknownBox
         })
+    }
+}
+
+impl Assertion for BoxHash {
+    fn label(&self) -> &str {
+        Self::LABEL
+    }
+
+    fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
+        c2pa_cbor::to_vec_deterministic(self)
+    }
+
+    fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
+        c2pa_cbor::from_slice(bytes)
     }
 }
 

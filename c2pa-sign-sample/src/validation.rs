@@ -3,9 +3,10 @@
 use std::fs::File;
 
 use asset_io::Structure;
+use c2pa_assertions::{Assertion, BoxHash, DataHash};
 use c2pa_cbor::Value;
 use c2pa_cbor::cose::{CoseSign1, Label};
-use c2pa_claim::{BoxHash, DataHash, HashedUri};
+use c2pa_claim::HashedUri;
 use c2pa_store::{ContentType, JumbfUri, ManifestStore};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;

@@ -101,8 +101,9 @@ Responsibilities are split so no container knowledge reaches the client:
   boxes (`c2pa_boxes`, with the store as one `C2PA` box and trailing data as
   `c2pa.after`) and gives the data-hash exclusions
   (`c2pa_data_hash_exclusions`).
-- The binding builds its own placeholder and fills itself in, through the
-  `HardBinding` trait the signer uses. `DataHash::placeholder` reserves each
+- The binding builds its own placeholder and fills itself in. The signer
+  handles every assertion through `c2pa-assertions`' common `Assertion`
+  trait (label and deterministic CBOR). `DataHash::placeholder` reserves each
   exclusion at its widest deterministic-CBOR encoding, and `DataHash::update`
   sets the real values and pads back to the placeholder's length.
   `BoxHash::placeholder` lists the planned output's box names with zero

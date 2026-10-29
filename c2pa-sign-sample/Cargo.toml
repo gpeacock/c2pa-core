@@ -5,6 +5,7 @@ edition = "2024"
 default-run = "c2pa-sign-sample"
 
 [dependencies]
+c2pa-assertions = { version = "0.0.0", path = "../c2pa-assertions" }
 c2pa-claim = { version = "0.0.0", path = "../c2pa-claim" }
 c2pa-store = { version = "0.0.0", path = "../c2pa-store", features = ["write", "std"] }
 c2pa_cbor = { git = "https://github.com/contentauth/c2pa-cbor", branch = "gpeacock/cose-support", features = ["cose"] }

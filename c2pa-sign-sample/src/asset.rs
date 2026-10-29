@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use asset_io::{C2paBox, C2paHash, HandlerRegistry, NullSink, Structure, Updates};
-use c2pa_claim::{AssetBox, BoxHash, DataHash, HardBinding, HashRange};
+use c2pa_assertions::{Assertion, AssetBox, BoxHash, DataHash, HashRange};
 use c2pa_store::ManifestStore;
 use sha2::digest::DynDigest;
 use sha2::{Digest, Sha256, Sha384, Sha512};
@@ -155,7 +155,7 @@ impl Binding {
         })
     }
 
-    fn assertion(&self) -> &dyn HardBinding {
+    fn assertion(&self) -> &dyn Assertion {
         match self {
             Self::Data { binding, .. } => binding,
             Self::Boxes(binding) => binding,

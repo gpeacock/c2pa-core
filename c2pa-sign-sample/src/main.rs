@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use c2pa_claim::DataHash;
+use c2pa_assertions::DataHash;
 use c2pa_sign_sample::{Result, TestSigner};
 
 fn run() -> Result<()> {

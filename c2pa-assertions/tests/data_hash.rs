@@ -4,8 +4,9 @@
 
 use std::io::Cursor;
 
+use c2pa_assertions::{Assertion, DataHash, HashRange, PadError};
 use c2pa_cbor::Value;
-use c2pa_claim::{Claim, DataHash, GeneratorInfo, HashRange, PadError};
+use c2pa_claim::{Claim, GeneratorInfo};
 use c2pa_store::ManifestStore;
 use sha2::{Digest, Sha256};
 

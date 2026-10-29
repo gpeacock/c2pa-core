@@ -1,0 +1,24 @@
+[package]
+name = "c2pa-assertions"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "C2PA assertions (actions, data hash, box hash) built on c2pa-claim and c2pa_cbor"
+publish = false
+
+[dependencies]
+c2pa-claim = { path = "../c2pa-claim", default-features = false }
+c2pa_cbor = "0.78.0"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+
+[dev-dependencies]
+c2pa-store = { path = "../c2pa-store", features = ["write"] }
+sha2 = "0.10"
+
+[features]
+default = ["std"]
+# Streams an asset through std::io::Read when hashing it (`DataHash::from_reader`,
+# `BoxHash::update` and `verify`). Everything else borrows `&[u8]`/`&str`.
+std = ["c2pa-claim/std"]

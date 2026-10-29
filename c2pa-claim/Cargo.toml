@@ -16,7 +16,8 @@ sha2 = { version = "0.10", default-features = false }
 
 [features]
 default = ["std"]
-# Enables digest_reader/DataHash::from_reader, which stream-hash a
-# std::io::Read source without buffering it in memory. Everything else in
-# this crate only borrows &[u8]/&str and has no std dependency.
+# Enables hash::digest_reader, which stream-hashes a std::io::Read source
+# without buffering it in memory (used by c2pa-assertions' hash assertions).
+# Everything else in this crate only borrows &[u8]/&str and has no std
+# dependency.
 std = ["sha2/std"]

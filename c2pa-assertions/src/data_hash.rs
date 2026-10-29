@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
-use crate::hash;
+use c2pa_claim::hash;
+
+use crate::Assertion;
 
 /// A byte range excluded from a [`DataHash`]'s coverage: for an embedded
 /// manifest, the span its container reserves for it. Not produced by
@@ -83,17 +85,6 @@ impl DataHash {
         Ok(Self::new(alg, digest))
     }
 
-    /// Encode to deterministic (canonical) CBOR — the form that gets hashed
-    /// and signed, as C2PA requires.
-    pub fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
-        c2pa_cbor::to_vec_deterministic(self)
-    }
-
-    /// Decode a data-hash assertion from CBOR bytes.
-    pub fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
-        c2pa_cbor::from_slice(bytes)
-    }
-
     /// A placeholder for an embedded binding with `exclusion_count` exclusions:
     /// a zero hash of `alg`'s length and each exclusion at its widest encoding,
     /// so the final binding never needs more room; see
@@ -161,6 +152,20 @@ impl DataHash {
             return Err(PadError::Unreachable { target: size });
         }
         Ok(())
+    }
+}
+
+impl Assertion for DataHash {
+    fn label(&self) -> &str {
+        Self::LABEL
+    }
+
+    fn to_cbor(&self) -> Result<Vec<u8>, c2pa_cbor::Error> {
+        c2pa_cbor::to_vec_deterministic(self)
+    }
+
+    fn from_cbor(bytes: &[u8]) -> Result<Self, c2pa_cbor::Error> {
+        c2pa_cbor::from_slice(bytes)
     }
 }
 

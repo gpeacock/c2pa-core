@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use asset_io::{HandlerRegistry, ItemKind, NullSink, Updates};
+use c2pa_assertions::{Assertion, DataHash, HashRange};
 use c2pa_cbor::cose::CoseSign1;
-use c2pa_claim::{DataHash, HashRange};
 use c2pa_sign_sample::{TestSigner, asset};
 use c2pa_store::ManifestStore;
 

@@ -6,9 +6,10 @@ pub mod dump;
 mod ephemeral_cert;
 pub mod validation;
 
+use c2pa_assertions::{Action, Actions, Assertion};
 use c2pa_cbor::Value;
 use c2pa_cbor::cose::{CoseSign1Builder, HeaderBuilder};
-use c2pa_claim::{Action, Actions, Claim, GeneratorInfo, HardBinding, HashedUri};
+use c2pa_claim::{Claim, GeneratorInfo, HashedUri};
 use c2pa_store::{ManifestStoreBuilder, ManifestStoreEditor};
 use ed25519_dalek::Signer;
 
@@ -48,11 +49,7 @@ impl TestSigner {
     }
 
     /// Build a signed manifest, optionally retaining an existing store's children.
-    pub fn build_store(
-        &self,
-        binding: &dyn HardBinding,
-        previous: Option<&[u8]>,
-    ) -> Result<Vec<u8>> {
+    pub fn build_store(&self, binding: &dyn Assertion, previous: Option<&[u8]>) -> Result<Vec<u8>> {
         Ok(self.placeholder(binding, previous)?.store)
     }
 
@@ -61,7 +58,7 @@ impl TestSigner {
     /// in the real binding later without changing the store's size.
     pub fn placeholder(
         &self,
-        binding: &dyn HardBinding,
+        binding: &dyn Assertion,
         previous: Option<&[u8]>,
     ) -> Result<Placeholder> {
         let mut builder = ManifestStoreBuilder::new(Vec::new(), &self.label)?;
@@ -70,16 +67,21 @@ impl TestSigner {
         let mut claim = Claim::new(&self.label, &self.instance_id, info);
         claim.alg = Some("sha256".to_string());
 
-        let hash = builder.add_cbor_assertion(binding.label(), None, &binding.to_cbor()?)?;
-        claim.add_created_assertion(HashedUri::new(hash.url, Some(hash.alg.into()), &hash.hash));
-
         let mut actions = Actions::new();
         actions.add_action(
             Action::new(Action::CREATED)
                 .with_digital_source_type(Action::DIGITAL_SOURCE_TYPE_EMPTY),
         );
-        let hash = builder.add_cbor_assertion(Actions::LABEL, None, &actions.to_cbor()?)?;
-        claim.add_created_assertion(HashedUri::new(hash.url, Some(hash.alg.into()), &hash.hash));
+        // Every assertion is added the same way, whatever its type.
+        for assertion in [binding, &actions as &dyn Assertion] {
+            let hash =
+                builder.add_cbor_assertion(assertion.label(), None, &assertion.to_cbor()?)?;
+            claim.add_created_assertion(HashedUri::new(
+                hash.url,
+                Some(hash.alg.into()),
+                &hash.hash,
+            ));
+        }
         let claim_cbor = claim.to_cbor()?;
         builder.add_claim("c2pa.claim.v2", &claim_cbor)?;
         builder.add_signature(&self.sign(&claim_cbor)?)?;
@@ -94,7 +96,7 @@ impl TestSigner {
     /// Replace the placeholder's hard binding with `binding`, which the binding
     /// has kept the same length, then update the claim's reference to it and
     /// re-sign. Each box is rewritten in place, so nothing in the store moves.
-    pub fn complete(&self, placeholder: &mut Placeholder, binding: &dyn HardBinding) -> Result<()> {
+    pub fn complete(&self, placeholder: &mut Placeholder, binding: &dyn Assertion) -> Result<()> {
         let mut editor = ManifestStoreEditor::new(&mut placeholder.store);
         let hash = editor.update_assertion(&self.label, binding.label(), &binding.to_cbor()?)?;
         if !placeholder

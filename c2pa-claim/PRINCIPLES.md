@@ -1,8 +1,9 @@
-# Priorities for c2pa-claim, c2pa-store, and c2pa-cbor
+# Priorities for c2pa-assertions, c2pa-claim, c2pa-store, and c2pa-cbor
 
 This crate (`c2pa-claim`) depends on two sibling crates: `c2pa-store`
 (structural, zero-dependency JUMBF/box parsing) and `c2pa-cbor` (deterministic
-CBOR encoding/decoding). All three are held to the same priorities, in order.
+CBOR encoding/decoding). `c2pa-assertions` builds on this crate. All four are
+held to the same priorities, in order.
 This document is the reference the code is judged against; update it as the
 crates evolve rather than letting intent drift back into scattered comments.
 
@@ -31,7 +32,10 @@ test cases alone — hand-picked cases only cover what you already thought of.
 Each crate does one job and doesn't reach into a layer above or beside it:
 `c2pa-store` only understands box structure (no CBOR, no hashing, no
 signing); `c2pa-cbor` only understands CBOR (no C2PA semantics); `c2pa-claim`
-only understands claim/assertion semantics (no box-tree parsing of its own).
+only understands claim and hashed-URI semantics (no box-tree parsing of its
+own); `c2pa-assertions` only understands assertion semantics, behind the common
+`Assertion` trait (no containers: a hard binding is told the asset's ranges or
+boxes by its caller).
 A dependency should never be added to save a few lines of code if it blurs
 this boundary.
 
@@ -85,8 +89,15 @@ the crate is `std`-only with no `no_std` path (priority 6, not currently
 pursued per the reasoning above); no `fuzz/` harness exists yet, so
 adversarial-input coverage is unit tests rather than fuzzed.
 
-**`c2pa-claim`** (this crate) — models a deliberate subset of the claim/
-assertion spec, matching `c2pa-rs` field names for wire compatibility.
-`std` is isolated to one streaming-hash code path (`hash::digest_reader`,
-`DataHash::from_reader`), gated behind the `std` feature (default-on); the
-rest of the public API borrows `&[u8]`/`&str`. No `fuzz/` harness yet.
+**`c2pa-claim`** (this crate) — models a deliberate subset of the claim
+spec, matching `c2pa-rs` field names for wire compatibility. `std` is
+isolated to one streaming-hash code path (`hash::digest_reader`), gated behind
+the `std` feature (default-on); the rest of the public API borrows
+`&[u8]`/`&str`. No `fuzz/` harness yet.
+
+**`c2pa-assertions`** — models a deliberate subset of each assertion's CDDL
+(actions, data hash, box hash), matching `c2pa-rs` field names. Every
+assertion implements `Assertion` (label and deterministic CBOR). `std` is
+isolated to streaming an asset through `std::io::Read` when hashing it
+(`DataHash::from_reader`, `BoxHash::update`/`verify`), behind its `std`
+feature. No `fuzz/` harness yet.

@@ -34,7 +34,8 @@
 use std::io::Cursor;
 use std::process::ExitCode;
 
-use c2pa_claim::{Action, Actions, Claim, DataHash, GeneratorInfo, HashedUri};
+use c2pa_assertions::{Action, Actions, Assertion, DataHash};
+use c2pa_claim::{Claim, GeneratorInfo, HashedUri};
 use c2pa_store::{AssertionHash, ManifestStore, ManifestStoreBuilder};
 use serde::Serialize;
 
