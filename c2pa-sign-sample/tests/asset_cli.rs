@@ -181,7 +181,7 @@ fn detects_asset_signature_and_assertion_tampering() {
     fs::write(&signed, changed).unwrap();
     failure(
         cli(&["validate".as_ref(), signed.as_os_str()]),
-        "asset data-hash mismatch",
+        "assertion.dataHash.mismatch",
     );
     fs::write(&signed, &original).unwrap();
 

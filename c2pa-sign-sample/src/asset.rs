@@ -1,14 +1,14 @@
 //! Container access and size-stable embedding through asset-io.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use asset_io::{C2paBox, C2paHash, HandlerRegistry, NullSink, Structure, Updates};
-use c2pa_assertions::{Assertion, AssetBox, BoxHash, DataHash, HashRange};
+use c2pa_assertions::{
+    Assertion, AssetBox, BoxHash, DataHash, HashRange, RangeDigest, feed_reader,
+};
 use c2pa_store::ManifestStore;
-use sha2::digest::DynDigest;
-use sha2::{Digest, Sha256, Sha384, Sha512};
 use tempfile::NamedTempFile;
 
 use crate::{Result, TestSigner};
@@ -67,36 +67,9 @@ pub fn exclusions(structure: &Structure, file: &mut File) -> Result<Vec<HashRang
 
 /// Hash every byte outside validated, ordered exclusion ranges, with bounded memory.
 pub fn hash_asset(file: &mut File, total: u64, alg: &str, ranges: &[HashRange]) -> Result<Vec<u8>> {
-    let mut hasher: Box<dyn DynDigest> = match alg {
-        "sha256" => Box::new(Sha256::new()),
-        "sha384" => Box::new(Sha384::new()),
-        "sha512" => Box::new(Sha512::new()),
-        _ => return Err(format!("unsupported asset hash algorithm: {alg}").into()),
-    };
-    let mut cursor = 0;
-    let mut buffer = [0u8; 64 * 1024];
-    for range in ranges.iter().cloned().chain(std::iter::once(HashRange {
-        start: total,
-        length: 0,
-    })) {
-        let end = range
-            .start
-            .checked_add(range.length)
-            .ok_or("exclusion overflow")?;
-        if range.start < cursor || end > total {
-            return Err("asset exclusions overlap, are unordered, or exceed the file".into());
-        }
-        file.seek(SeekFrom::Start(cursor))?;
-        let mut remaining = range.start - cursor;
-        while remaining > 0 {
-            let len = remaining.min(buffer.len() as u64) as usize;
-            file.read_exact(&mut buffer[..len])?;
-            hasher.update(&buffer[..len]);
-            remaining -= len as u64;
-        }
-        cursor = end;
-    }
-    Ok(hasher.finalize().into_vec())
+    let mut task = RangeDigest::excluding(alg, total, ranges)?;
+    feed_reader(&mut task, file)?;
+    Ok(task.finish().ok_or("asset hash is incomplete")?)
 }
 
 pub fn ca_path(output: &Path) -> PathBuf {

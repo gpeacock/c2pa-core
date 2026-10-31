@@ -97,7 +97,9 @@ the `std` feature (default-on); the rest of the public API borrows
 
 **`c2pa-assertions`** — models a deliberate subset of each assertion's CDDL
 (actions, data hash, box hash), matching `c2pa-rs` field names. Every
-assertion implements `Assertion` (label and deterministic CBOR). `std` is
-isolated to streaming an asset through `std::io::Read` when hashing it
-(`DataHash::from_reader`, `BoxHash::update`/`verify`), behind its `std`
+assertion implements `Assertion` (label and deterministic CBOR). Asset
+hashing is sans-I/O: hard bindings return a `Feed` that asks for byte ranges
+and hashes caller-supplied slices in place (zero-copy, no internal buffer).
+`std` is isolated to blocking drivers over `std::io::Read` (`feed_reader`,
+`DataHash::from_reader`, `BoxHash::update`/`verify`), behind its `std`
 feature. No `fuzz/` harness yet.

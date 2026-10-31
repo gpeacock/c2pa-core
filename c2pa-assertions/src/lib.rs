@@ -12,9 +12,12 @@
 //! byte ranges or boxes by its caller (see [`HashRange`] and [`AssetBox`]), and
 //! the store writes whatever bytes an assertion encodes to.
 //!
-//! The `std` feature (on by default) enables hashing an asset from a
-//! `std::io::Read` source: [`DataHash::from_reader`], [`BoxHash::update`] and
-//! [`BoxHash::verify`].
+//! Hashing an asset is sans-I/O: [`DataHash::task`] and [`BoxHash::task`]
+//! return a [`Feed`] that names the byte ranges it needs and hashes the slices
+//! the caller supplies in place, so any I/O model (blocking, `async`, memory
+//! map, range requests) drives the same code. The `std` feature (on by default)
+//! adds blocking drivers over `std::io::Read`: [`feed_reader`],
+//! [`DataHash::from_reader`], [`BoxHash::update`] and [`BoxHash::verify`].
 //!
 //! See `C2PA_SPEC_NOTES.md` in this crate for the specification rules the hard
 //! bindings follow.
@@ -23,10 +26,14 @@ mod actions;
 mod assertion;
 mod box_hash;
 mod data_hash;
+mod feed;
 
 pub use actions::{Action, Actions};
 pub use assertion::Assertion;
 pub use box_hash::{
-    AssetBox, BoxExclusion, BoxHash, BoxHashError, BoxHashReport, BoxMap, C2PA_BOX,
+    AssetBox, BoxExclusion, BoxHash, BoxHashError, BoxHashReport, BoxHashTask, BoxMap, C2PA_BOX,
 };
-pub use data_hash::{DataHash, HashRange, PadError};
+pub use data_hash::{DataHash, DataHashError, HashRange, PadError};
+#[cfg(feature = "std")]
+pub use feed::feed_reader;
+pub use feed::{feed_slice, Feed, Need, RangeDigest, RangeError};

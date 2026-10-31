@@ -3,7 +3,7 @@
 use std::fs::File;
 
 use asset_io::Structure;
-use c2pa_assertions::{Assertion, BoxHash, DataHash};
+use c2pa_assertions::{Assertion, BoxHash, DataHash, feed_reader};
 use c2pa_cbor::Value;
 use c2pa_cbor::cose::{CoseSign1, Label};
 use c2pa_claim::HashedUri;
@@ -235,15 +235,9 @@ pub fn validate(
             "data-hash exclusions differ from the supported container's manifest ranges".into(),
         );
     }
-    let alg = binding
-        .alg
-        .as_deref()
-        .or(default_alg.as_deref())
-        .ok_or("data hash has no algorithm")?;
-    let actual = asset::hash_asset(file, structure.total_size(), alg, ranges)?;
-    if actual != binding.hash {
-        return Err("asset data-hash mismatch".into());
-    }
+    let mut task = binding.task(structure.total_size(), default_alg.as_deref())?;
+    feed_reader(&mut task, file)?;
+    binding.check(task)?;
     Ok(report)
 }
 

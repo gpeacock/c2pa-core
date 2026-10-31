@@ -19,6 +19,7 @@ sha2 = "0.10"
 
 [features]
 default = ["std"]
-# Streams an asset through std::io::Read when hashing it (`DataHash::from_reader`,
-# `BoxHash::update` and `verify`). Everything else borrows `&[u8]`/`&str`.
+# Blocking drivers that stream an asset through std::io::Read when hashing it
+# (`feed_reader`, `DataHash::from_reader`, `BoxHash::update` and `verify`). The
+# caller-fed hashing tasks they drive need no std.
 std = ["c2pa-claim/std"]

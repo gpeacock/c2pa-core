@@ -9,6 +9,7 @@ use serde_bytes::ByteBuf;
 use c2pa_claim::hash;
 
 use crate::data_hash::HashRange;
+use crate::feed::{Feed, Need, RangeDigest};
 use crate::Assertion;
 
 /// The name a box hash lists the C2PA manifest store under, whatever the
@@ -16,7 +17,6 @@ use crate::Assertion;
 pub const C2PA_BOX: &str = "C2PA";
 
 /// Longest box name the CDDL allows.
-#[cfg(feature = "std")]
 const MAX_BOX_NAME: usize = 10;
 
 /// A byte range within one of a [`BoxMap`]'s boxes that its hash leaves out
@@ -137,7 +137,8 @@ impl BoxHash {
 
     /// Hash each entry's boxes in `asset`, whose boxes are `boxes`, keeping the
     /// assertion's encoded length. The boxes must be exactly those the entries
-    /// name, in order. `default_alg` is the claim's `alg`.
+    /// name, in order. `default_alg` is the claim's `alg`. A blocking driver for
+    /// [`task`](Self::task) and [`apply`](Self::apply).
     #[cfg(feature = "std")]
     pub fn update<R>(
         &mut self,
@@ -148,23 +149,17 @@ impl BoxHash {
     where
         R: std::io::Read + std::io::Seek,
     {
-        let size = self.to_cbor()?.len();
-        let plan = self.plan(asset, boxes, default_alg)?;
-        for (entry, step) in self.boxes.iter_mut().zip(plan.entries) {
-            if let Some((alg, ranges)) = step {
-                entry.hash = digest_ranges(asset, &alg, &ranges)?;
-            }
-        }
-        if self.to_cbor()?.len() != size {
-            return Err(BoxHashError::SizeChanged);
-        }
-        Ok(())
+        let total = asset.seek(std::io::SeekFrom::End(0))?;
+        let mut task = self.task(total, boxes, default_alg)?;
+        crate::feed_reader(&mut task, asset)?;
+        self.apply(task)
     }
 
     /// Check the assertion against `asset`, whose boxes are `boxes`
     /// (C2PA 2.4, 15.12.3). Every box must be named, in order; every entry but
     /// the C2PA store's and those marked `excluded` must match. `default_alg` is
-    /// the claim's `alg`.
+    /// the claim's `alg`. A blocking driver for [`task`](Self::task) and
+    /// [`check`](Self::check).
     #[cfg(feature = "std")]
     pub fn verify<R>(
         &self,
@@ -175,37 +170,35 @@ impl BoxHash {
     where
         R: std::io::Read + std::io::Seek,
     {
-        let plan = self.plan(asset, boxes, default_alg)?;
-        for (entry, step) in self.boxes.iter().zip(plan.entries) {
-            let Some((alg, ranges)) = step else { continue };
-            if digest_ranges(asset, &alg, &ranges)? != entry.hash {
-                return Err(BoxHashError::Mismatch(entry.names.join(",")));
-            }
-        }
-        Ok(plan.report)
+        let total = asset.seek(std::io::SeekFrom::End(0))?;
+        let mut task = self.task(total, boxes, default_alg)?;
+        crate::feed_reader(&mut task, asset)?;
+        self.check(task)
     }
 
-    /// Match the entries to `boxes` and work out, for each entry that is hashed,
-    /// its algorithm and the ranges its hash covers.
-    #[cfg(feature = "std")]
-    fn plan<R: std::io::Seek>(
+    /// Hash the entries' boxes in `asset` of `total` bytes, whose boxes are
+    /// `boxes`, without doing the I/O: feed the returned [`Feed`] the bytes it
+    /// asks for, then [`check`](Self::check) or [`apply`](Self::apply) it.
+    /// Structural failures (C2PA 2.4, 15.12.3) are reported here, before any
+    /// byte is read. `default_alg` is the claim's `alg`.
+    pub fn task(
         &self,
-        asset: &mut R,
+        total: u64,
         boxes: &[AssetBox<'_>],
         default_alg: Option<&str>,
-    ) -> Result<Plan, BoxHashError> {
+    ) -> Result<BoxHashTask, BoxHashError> {
         use BoxHashError::{Malformed, Mismatch};
         if self.boxes.is_empty() {
             return Err(Malformed("no boxes"));
         }
-        let total = asset.seek(std::io::SeekFrom::End(0))?;
         self.check_order(boxes)?;
         let mut next = boxes.iter();
-        let mut plan = Plan {
-            entries: Vec::with_capacity(self.boxes.len()),
+        let mut task = BoxHashTask {
+            digests: Vec::with_capacity(self.boxes.len()),
+            next: 0,
             report: BoxHashReport::default(),
         };
-        for entry in &self.boxes {
+        for (index, entry) in self.boxes.iter().enumerate() {
             let mut matched = Vec::with_capacity(entry.names.len());
             for name in &entry.names {
                 if name.is_empty() || name.len() > MAX_BOX_NAME {
@@ -240,12 +233,10 @@ impl BoxHash {
                 if entry.names.len() != 1 {
                     return Err(Malformed("C2PA store shares an entry"));
                 }
-                plan.entries.push(None);
                 continue;
             }
             if entry.excluded == Some(true) {
-                plan.report.additional_exclusions = true;
-                plan.entries.push(None);
+                task.report.additional_exclusions = true;
                 continue;
             }
             let alg = entry
@@ -254,9 +245,6 @@ impl BoxHash {
                 .or(self.alg.as_deref())
                 .or(default_alg)
                 .ok_or(BoxHashError::UnsupportedAlg(None))?;
-            if hash::digest(alg, &[]).is_none() {
-                return Err(BoxHashError::UnsupportedAlg(Some(alg.to_string())));
-            }
             let mut excluded = Vec::new();
             for exclusion in entry.exclusions.iter().flatten() {
                 let index = match exclusion.box_index {
@@ -293,7 +281,7 @@ impl BoxHash {
                     return Err(Mismatch(entry.names.join(",")));
                 }
                 excluded.push((start, end));
-                plan.report.additional_exclusions = true;
+                task.report.additional_exclusions = true;
             }
             let mut ranges = Vec::with_capacity(excluded.len() + 1);
             let mut cursor = span.start;
@@ -313,17 +301,48 @@ impl BoxHash {
                     length: span_end - cursor,
                 });
             }
-            plan.entries.push(Some((alg.to_string(), ranges)));
+            let digest = RangeDigest::new(alg, ranges)
+                .ok_or_else(|| BoxHashError::UnsupportedAlg(Some(alg.to_string())))?;
+            task.digests.push((index, digest));
         }
         if next.next().is_some() {
             return Err(BoxHashError::UnknownBox);
         }
-        Ok(plan)
+        Ok(task)
+    }
+
+    /// Check a fully fed [`task`](Self::task) of this assertion against its
+    /// entries' hashes.
+    pub fn check(&self, task: BoxHashTask) -> Result<BoxHashReport, BoxHashError> {
+        let report = task.report;
+        for (index, digest) in task.digests {
+            let entry = self.boxes.get(index).ok_or(BoxHashError::Incomplete)?;
+            if digest.finish().ok_or(BoxHashError::Incomplete)? != entry.hash {
+                return Err(BoxHashError::Mismatch(entry.names.join(",")));
+            }
+        }
+        Ok(report)
+    }
+
+    /// Set the entries' hashes from a fully fed [`task`](Self::task) of this
+    /// assertion, keeping its encoded length.
+    pub fn apply(&mut self, task: BoxHashTask) -> Result<(), BoxHashError> {
+        let size = self.to_cbor()?.len();
+        for (index, digest) in task.digests {
+            let hash = digest.finish().ok_or(BoxHashError::Incomplete)?;
+            self.boxes
+                .get_mut(index)
+                .ok_or(BoxHashError::Incomplete)?
+                .hash = hash;
+        }
+        if self.to_cbor()?.len() != size {
+            return Err(BoxHashError::SizeChanged);
+        }
+        Ok(())
     }
 
     /// Distinguish boxes listed out of order (a mismatch) from boxes the
     /// assertion does not list (an unknown box).
-    #[cfg(feature = "std")]
     fn check_order(&self, boxes: &[AssetBox<'_>]) -> Result<(), BoxHashError> {
         let listed = self
             .boxes
@@ -358,51 +377,35 @@ impl Assertion for BoxHash {
     }
 }
 
-/// For each entry, its algorithm and the ranges its hash covers, or `None` when
-/// it is not hashed.
-#[cfg(feature = "std")]
-struct Plan {
-    entries: Vec<Option<(String, Vec<HashRange>)>>,
+/// The hashing of a [`BoxHash`]'s entries, driven by the caller; see
+/// [`BoxHash::task`]. The entries' boxes tile the asset in order, so the bytes
+/// are wanted front to back.
+#[derive(Clone, Debug)]
+pub struct BoxHashTask {
+    /// Each hashed entry's index and digest, in file order.
+    digests: Vec<(usize, RangeDigest)>,
+    /// The first digest still wanting bytes.
+    next: usize,
     report: BoxHashReport,
 }
 
-/// The digest of `ranges` of `asset`, in order, as one stream.
-#[cfg(feature = "std")]
-fn digest_ranges<R>(asset: &mut R, alg: &str, ranges: &[HashRange]) -> Result<Vec<u8>, BoxHashError>
-where
-    R: std::io::Read + std::io::Seek,
-{
-    struct Ranges<'r, R> {
-        asset: &'r mut R,
-        ranges: std::slice::Iter<'r, HashRange>,
-        left: u64,
+impl Feed for BoxHashTask {
+    fn need(&self) -> Option<Need> {
+        self.digests
+            .get(self.next..)?
+            .iter()
+            .find_map(|(_, d)| d.need())
     }
-    impl<R: std::io::Read + std::io::Seek> std::io::Read for Ranges<'_, R> {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            while self.left == 0 {
-                let Some(r) = self.ranges.next() else {
-                    return Ok(0);
-                };
-                self.asset.seek(std::io::SeekFrom::Start(r.start))?;
-                self.left = r.length;
+
+    fn feed(&mut self, data: &[u8]) -> usize {
+        while let Some((_, digest)) = self.digests.get_mut(self.next) {
+            if digest.need().is_some() {
+                return digest.feed(data);
             }
-            let want = buf
-                .len()
-                .min(usize::try_from(self.left).unwrap_or(usize::MAX));
-            let n = self.asset.read(&mut buf[..want])?;
-            if n == 0 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
-            }
-            self.left -= n as u64;
-            Ok(n)
+            self.next += 1;
         }
+        0
     }
-    let reader = Ranges {
-        asset,
-        ranges: ranges.iter(),
-        left: 0,
-    };
-    Ok(hash::digest_reader(alg, reader)?)
 }
 
 /// Why building or checking a [`BoxHash`] failed. [`code`](Self::code) gives the
@@ -422,6 +425,8 @@ pub enum BoxHashError {
     UnsupportedAlg(Option<String>),
     /// Hashing changed the assertion's encoded length.
     SizeChanged,
+    /// A task was not fed every byte it wanted, or belongs to another assertion.
+    Incomplete,
     /// The assertion could not be encoded.
     Encode(c2pa_cbor::Error),
     /// Reading the asset failed.
@@ -465,6 +470,7 @@ impl core::fmt::Display for BoxHashError {
             Self::UnsupportedAlg(Some(alg)) => write!(f, "unsupported box hash algorithm {alg}"),
             Self::UnsupportedAlg(None) => f.write_str("box hash has no algorithm"),
             Self::SizeChanged => f.write_str("box hash changed length"),
+            Self::Incomplete => f.write_str("box hash task is incomplete"),
             Self::Encode(e) => write!(f, "box hash encoding failed: {e}"),
             #[cfg(feature = "std")]
             Self::Io(e) => write!(f, "box hash: {e}"),

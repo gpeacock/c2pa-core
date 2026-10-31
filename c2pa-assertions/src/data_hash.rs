@@ -3,6 +3,7 @@ use serde_bytes::ByteBuf;
 
 use c2pa_claim::hash;
 
+use crate::feed::{RangeDigest, RangeError};
 use crate::Assertion;
 
 /// A byte range excluded from a [`DataHash`]'s coverage: for an embedded
@@ -83,6 +84,31 @@ impl DataHash {
     pub fn from_reader(alg: &str, reader: impl std::io::Read) -> std::io::Result<Self> {
         let digest = hash::digest_reader(alg, reader)?;
         Ok(Self::new(alg, digest))
+    }
+
+    /// Hash what this assertion covers in an asset of `total` bytes, without
+    /// doing the I/O: feed the returned [`Feed`](crate::Feed) the bytes it asks
+    /// for, then [`check`](Self::check) it. `default_alg` is the claim's `alg`.
+    pub fn task(
+        &self,
+        total: u64,
+        default_alg: Option<&str>,
+    ) -> Result<RangeDigest, DataHashError> {
+        let alg = self.alg.as_deref().or(default_alg);
+        let exclusions = self.exclusions.as_deref().unwrap_or_default();
+        RangeDigest::excluding(alg.unwrap_or_default(), total, exclusions).map_err(|e| match e {
+            RangeError::Exclusions => DataHashError::Malformed,
+            _ => DataHashError::UnsupportedAlg,
+        })
+    }
+
+    /// Check a fully fed [`task`](Self::task) against this assertion's hash.
+    pub fn check(&self, task: RangeDigest) -> Result<(), DataHashError> {
+        match task.finish() {
+            None => Err(DataHashError::Incomplete),
+            Some(hash) if hash == self.hash => Ok(()),
+            Some(_) => Err(DataHashError::Mismatch),
+        }
     }
 
     /// A placeholder for an embedded binding with `exclusion_count` exclusions:
@@ -168,6 +194,50 @@ impl Assertion for DataHash {
         c2pa_cbor::from_slice(bytes)
     }
 }
+
+/// Why hashing or checking a [`DataHash`] failed. [`code`](Self::code) gives
+/// the C2PA failure code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DataHashError {
+    /// No algorithm is given, or the one given is not supported.
+    UnsupportedAlg,
+    /// The exclusions are out of order, overlap, or exceed the asset.
+    Malformed,
+    /// The asset's hash does not match.
+    Mismatch,
+    /// The task was not fed every byte it wanted.
+    Incomplete,
+}
+
+impl DataHashError {
+    /// The C2PA validation failure code, where there is one.
+    pub fn code(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::UnsupportedAlg => "algorithm.unsupported",
+            Self::Malformed => "assertion.dataHash.malformed",
+            Self::Mismatch => "assertion.dataHash.mismatch",
+            Self::Incomplete => return None,
+        })
+    }
+}
+
+impl core::fmt::Display for DataHashError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::UnsupportedAlg => "data hash has no supported algorithm",
+            Self::Malformed => "data hash exclusions are unordered, overlap, or exceed the asset",
+            Self::Mismatch => "data hash mismatch",
+            Self::Incomplete => "data hash task is incomplete",
+        })?;
+        match self.code() {
+            Some(code) => write!(f, " ({code})"),
+            None => Ok(()),
+        }
+    }
+}
+
+impl core::error::Error for DataHashError {}
 
 /// Why [`DataHash::pad_to_size`] failed.
 #[derive(Debug)]
